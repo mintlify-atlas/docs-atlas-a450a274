@@ -1,0 +1,99 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "repod",
+  "projectDescription": "Modern async networking library for multiplayer games in Python",
+  "theme": "palm",
+  "primaryColor": "#8B5CF6",
+  "lightColor": "#A78BFA",
+  "darkColor": "#7C3AED",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/overview",
+              "concepts/client-server",
+              "concepts/actions-dispatch",
+              "concepts/serialization"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/building-server",
+              "guides/building-client",
+              "guides/message-handling",
+              "guides/background-threads",
+              "guides/error-handling"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/chat",
+              "examples/whiteboard",
+              "examples/tag-game",
+              "examples/latency"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Server",
+            "pages": [
+              "api/server",
+              "api/channel"
+            ]
+          },
+          {
+            "group": "Client",
+            "pages": [
+              "api/client",
+              "api/connection-listener"
+            ]
+          },
+          {
+            "group": "Protocol",
+            "pages": [
+              "api/protocol",
+              "api/constants"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Asyncio-based networking with msgpack serialization",
+    "Simple action-based message dispatch with Network_* callbacks",
+    "Background thread support for synchronous game loops",
+    "Type-safe with full Python 3.12+ annotations",
+    "Drop-in replacement for PodSixNet"
+  ],
+  "publicApiSurface": [
+    "Server",
+    "Channel",
+    "Client",
+    "ConnectionListener",
+    "encode",
+    "decode",
+    "read_message",
+    "DEFAULT_HOST",
+    "DEFAULT_PORT",
+    "configure_logging"
+  ]
+}
