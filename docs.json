@@ -85,6 +85,12 @@
               "api/protocol",
               "api/constants"
             ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/logging"
+            ]
           }
         ]
       }

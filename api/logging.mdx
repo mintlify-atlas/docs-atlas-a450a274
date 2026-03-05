@@ -1,0 +1,155 @@
+---
+title: "Logging"
+description: "Optional structured logging configuration for repod"
+---
+
+## configure_logging
+
+Enable colored structured logging for the repod library.
+
+```python
+from repod import configure_logging
+
+configure_logging()            # INFO level to stderr
+configure_logging("DEBUG")     # verbose output
+```
+
+By default, repod is **silent** — it attaches a `NullHandler` to the `"repod"` logger so no output appears unless you explicitly opt in.
+
+### Signature
+
+```python
+def configure_logging(
+    level: int | str = logging.INFO,
+    stream: Any = None,
+) -> None
+```
+
+### Parameters
+
+<ParamField path="level" type="int | str" default="logging.INFO">
+  Minimum log level. Accepts an int (`logging.DEBUG`, `logging.INFO`, etc.) or a string (`"DEBUG"`, `"INFO"`, etc.)
+</ParamField>
+
+<ParamField path="stream" type="Any" default="sys.stderr">
+  Output stream for log messages. Defaults to `sys.stderr` if not specified.
+</ParamField>
+
+### Returns
+
+This function returns `None`.
+
+<Info>
+Call `configure_logging()` **once** at application startup, before creating any server or client instances.
+</Info>
+
+## Log Output Format
+
+When logging is enabled, repod produces colored, structured output inspired by structlog:
+
+```
+HH:MM:SS [+] server_started                     |  host=0.0.0.0  port=5071
+HH:MM:SS [+] client_connected                   |  addr=127.0.0.1:52340
+HH:MM:SS [*] message_dispatched                 |  action=chat
+```
+
+### Log Levels
+
+The formatter uses different colors and icons for each level:
+
+- **DEBUG** - Gray `[*]` - Detailed diagnostic messages
+- **INFO** - Green `[+]` - Normal operational messages
+- **WARNING** - Yellow `[!]` - Warning messages
+- **ERROR** - Red `[-]` - Error messages
+- **CRITICAL** - Bold red `[x]` - Critical failures
+
+### Structured Context
+
+Log messages include structured key-value pairs after the `|` separator. Common keys:
+
+- `host`, `port`, `addr` - Network addresses (cyan)
+- `action` - Message action type (blue)
+- `error` - Error messages (red)
+- `clients` - Client count (yellow)
+- `bytes` - Byte counts (yellow)
+
+## Example Usage
+
+### Basic Setup
+
+```python
+from repod import Server, Channel, configure_logging
+
+# Enable logging at startup
+configure_logging()
+
+class MyChannel(Channel):
+    def Network_chat(self, data: dict) -> None:
+        self.send({"action": "chat", "text": data["text"]})
+
+class MyServer(Server):
+    channel_class = MyChannel
+
+MyServer(host="0.0.0.0", port=5071).launch()
+```
+
+### Debug Mode
+
+For verbose output during development:
+
+```python
+import logging
+from repod import configure_logging
+
+# Show all debug messages
+configure_logging(level=logging.DEBUG)
+
+# Or use string level
+configure_logging(level="DEBUG")
+```
+
+### Custom Stream
+
+Log to a file instead of stderr:
+
+```python
+from repod import configure_logging
+
+with open("repod.log", "w") as log_file:
+    configure_logging(stream=log_file)
+    # Your server/client code here
+```
+
+<Warning>
+The colored ANSI codes may not render correctly when logging to a file. Consider using plain logging or stripping ANSI codes for file output.
+</Warning>
+
+## Internal Logging
+
+If you're building a library or framework on top of repod and want to use the same structured logging pattern, you can import the internal utilities:
+
+```python
+from repod.logconfig import get_logger
+
+log = get_logger(__name__)
+
+log.info("custom_event", key1="value1", key2="value2")
+log.debug("detailed_info", count=42)
+log.error("something_failed", error="Connection timeout")
+```
+
+<Note>
+The `get_logger()` function is not part of the public API exported from `repod.__init__`, but it's available for advanced use cases. It returns a `StructuredLogger` wrapper that accepts `**kwargs` for structured context.
+</Note>
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="Server API" icon="server" href="/api/server">
+    Configure and run servers
+  </Card>
+  
+  <Card title="Client API" icon="laptop" href="/api/client">
+    Connect and communicate with servers
+  </Card>
+</CardGroup>
