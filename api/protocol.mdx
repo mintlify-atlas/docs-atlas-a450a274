@@ -1,0 +1,137 @@
+---
+title: "Protocol"
+description: "Message serialization protocol with msgpack and length-prefix framing"
+---
+
+Handles encoding and decoding of network messages using msgpack serialization with length-prefix framing.
+
+## Message Format
+
+The protocol uses a 4-byte length-prefix framing format:
+
+```
+┌──────────────┬────────────────────────┐
+│ 4 bytes      │ N bytes                │
+│ length (BE)  │ msgpack payload        │
+└──────────────┴────────────────────────┘
+```
+
+This framing method is:
+- **Efficient**: O(1) boundary detection
+- **Safe**: No delimiter collision risk
+- **Standard**: Used by Kafka, Redis, Protocol Buffers, etc.
+
+## Functions
+
+### encode()
+
+```python
+def encode(data: dict) -> bytes
+```
+
+Encode a dictionary as a length-prefixed message frame.
+
+The message is serialized with msgpack and prefixed with a 4-byte big-endian length header.
+
+<ParamField path="data" type="dict" required>
+  Dictionary containing the message data. Can include any msgpack-serializable types (dict, list, str, int, float, bool, None).
+</ParamField>
+
+<ResponseField name="return" type="bytes">
+  The encoded message with its 4-byte length prefix.
+</ResponseField>
+
+**Raises:**
+- `TypeError`: If `data` contains non-serializable types.
+
+**Example:**
+
+```python
+from repod.protocol import encode
+
+encoded = encode({"action": "ping", "count": 5})
+len(encoded) > 4  # includes the 4-byte header
+# True
+```
+
+### decode()
+
+```python
+def decode(data: bytes) -> dict
+```
+
+Decode msgpack-serialized bytes into a dictionary.
+
+<Note>
+  This expects raw msgpack data, **not** a full length-prefixed frame. Use `read_message()` for stream-based decoding.
+</Note>
+
+<ParamField path="data" type="bytes" required>
+  Raw msgpack-serialized bytes.
+</ParamField>
+
+<ResponseField name="return" type="dict">
+  The decoded message dictionary.
+</ResponseField>
+
+**Raises:**
+- `msgpack.UnpackException`: If `data` is not valid msgpack.
+
+**Example:**
+
+```python
+import msgpack
+from repod.protocol import decode
+
+raw = msgpack.packb({"action": "hello"})
+decode(raw)
+# {'action': 'hello'}
+```
+
+### read_message()
+
+```python
+def read_message(stream: bytes) -> tuple[dict | None, int]
+```
+
+Read a complete message from a byte stream.
+
+Implements length-prefix framing to extract complete messages from a potentially partial byte buffer.
+
+<ParamField path="stream" type="bytes" required>
+  Byte buffer that may contain partial or complete messages.
+</ParamField>
+
+<ResponseField name="return" type="tuple[dict | None, int]">
+  A `(message, bytes_consumed)` tuple. If the stream does not yet contain a full message, returns `(None, 0)`.
+</ResponseField>
+
+**Example:**
+
+```python
+from repod.protocol import encode, read_message
+
+frame = encode({"action": "test"})
+msg, consumed = read_message(frame)
+
+msg
+# {'action': 'test'}
+
+consumed == len(frame)
+# True
+```
+
+## Complete Example
+
+```python
+from repod.protocol import encode, decode
+
+# Encode a message
+data = {"action": "chat", "message": "Hello!"}
+encoded = encode(data)
+
+# Decode the payload (skipping the 4-byte header)
+decoded = decode(encoded[4:])
+print(decoded)
+# {'action': 'chat', 'message': 'Hello!'}
+```

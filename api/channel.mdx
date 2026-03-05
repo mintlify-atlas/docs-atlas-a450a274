@@ -1,0 +1,204 @@
+---
+title: "Channel"
+description: "Network channel representing a single TCP connection"
+---
+
+## Overview
+
+A `Channel` represents one side of a TCP connection. On the server side, each connected client gets its own `Channel` instance.
+
+Subclass `Channel` and define `Network_{action}` methods to handle specific message types.
+
+## Class Definition
+
+```python
+class Channel[S: Server]
+```
+
+A generic channel parameterized by the Server type.
+
+## Class Attributes
+
+<ResponseField name="addr" type="tuple[str, int]">
+  `(host, port)` tuple of the remote endpoint.
+</ResponseField>
+
+<ResponseField name="is_connected" type="bool">
+  Whether the connection is currently active.
+</ResponseField>
+
+## Constructor
+
+```python
+def __init__(
+    self,
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    server: S | None = None,
+) -> None
+```
+
+Initialize a channel with asyncio stream reader/writer.
+
+<ParamField path="reader" type="asyncio.StreamReader">
+  Async stream reader for incoming data.
+</ParamField>
+
+<ParamField path="writer" type="asyncio.StreamWriter">
+  Async stream writer for outgoing data.
+</ParamField>
+
+<ParamField path="server" type="S | None" default="None">
+  Optional reference to the parent `Server`.
+</ParamField>
+
+## Properties
+
+### addr
+
+```python
+@property
+def addr(self) -> tuple[str, int]
+```
+
+Remote address as a `(host, port)` tuple.
+
+<ResponseField name="returns" type="tuple[str, int]">
+  The remote endpoint address.
+</ResponseField>
+
+### is_connected
+
+```python
+@property
+def is_connected(self) -> bool
+```
+
+Whether this channel is still connected.
+
+<ResponseField name="returns" type="bool">
+  `True` if connected, `False` if closed.
+</ResponseField>
+
+### server
+
+```python
+@property
+def server(self) -> S
+```
+
+The parent `Server` instance.
+
+<ResponseField name="returns" type="S">
+  The parent server instance.
+</ResponseField>
+
+<ResponseField name="raises" type="RuntimeError">
+  If the channel is not connected to a server.
+</ResponseField>
+
+## Methods
+
+### send
+
+```python
+def send(self, data: dict[str, Any]) -> int
+```
+
+Queue a message to be sent to the remote endpoint.
+
+The dictionary is serialized with msgpack and framed with a 4-byte length prefix before being placed in the async send queue.
+
+Thread-safe -- can be called from any thread, including the main game loop thread when using `Server.start_background()`.
+
+<ParamField path="data" type="dict[str, Any]">
+  Message dictionary. Should contain an `action` key to identify the message type on the receiver side.
+</ParamField>
+
+<ResponseField name="returns" type="int">
+  Number of bytes queued, or `0` if disconnected.
+</ResponseField>
+
+### on_connect
+
+```python
+def on_connect(self) -> None
+```
+
+Called when the connection is established. Override in your subclass to run setup logic when a client connects.
+
+### on_close
+
+```python
+def on_close(self) -> None
+```
+
+Called when the connection is closed. Override in your subclass to run cleanup logic when a client disconnects.
+
+### on_error
+
+```python
+def on_error(self, error: Exception) -> None
+```
+
+Called when a connection error occurs. Override to implement custom error handling.
+
+<ParamField path="error" type="Exception">
+  The exception that was raised.
+</ParamField>
+
+### network_received
+
+```python
+def network_received(self, data: dict[str, Any]) -> None
+```
+
+Fallback handler for messages with no specific handler.
+
+Called when a message's `action` does not match any `Network_{action}` method. Override to handle unrecognized messages.
+
+<ParamField path="data" type="dict[str, Any]">
+  The received message dictionary.
+</ParamField>
+
+## Message Handling
+
+The Channel class uses a convention-based routing system for incoming messages. When a message is received with an `action` field, the channel looks for a method named `Network_{action}` and calls it with the message data.
+
+### Example
+
+```python
+from repod import Channel
+
+class GameChannel(Channel):
+    def Network_chat(self, data: dict) -> None:
+        print(f"Chat: {data['message']}")
+    
+    def Network_move(self, data: dict) -> None:
+        print(f"Player moved to {data['x']}, {data['y']}")
+    
+    def on_connect(self) -> None:
+        print(f"Client connected from {self.addr}")
+    
+    def on_close(self) -> None:
+        print(f"Client {self.addr} disconnected")
+    
+    def on_error(self, error: Exception) -> None:
+        print(f"Error on {self.addr}: {error}")
+    
+    def network_received(self, data: dict) -> None:
+        print(f"Unhandled message: {data}")
+```
+
+## Broadcasting Messages
+
+To broadcast a message to all connected clients, use the server's `send_to_all()` method:
+
+```python
+class GameChannel(Channel):
+    def Network_chat(self, data: dict) -> None:
+        # Broadcast chat message to all clients
+        self.server.send_to_all(
+            {"action": "chat", "text": data["text"]}
+        )
+```

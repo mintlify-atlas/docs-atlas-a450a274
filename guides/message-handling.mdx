@@ -1,0 +1,356 @@
+---
+title: Message Handling
+description: Learn how to define Network_* methods and handle different action types in repod
+---
+
+Repod uses an **action-based message routing** system. Every message is a dictionary with an `action` key that determines which handler method gets called.
+
+## The Network_* Convention
+
+Define methods named `Network_{action}` to handle specific message types:
+
+```python
+class GameChannel(Channel):
+    def Network_chat(self, data: dict) -> None:
+        # Handles messages with action="chat"
+        print(f"Chat: {data['text']}")
+    
+    def Network_move(self, data: dict) -> None:
+        # Handles messages with action="move"
+        player_x = data['x']
+        player_y = data['y']
+        print(f"Player moved to ({player_x}, {player_y})")
+```
+
+When a message arrives with `{"action": "chat", "text": "Hello"}`, repod automatically calls `Network_chat(data)`.
+
+## Message Structure
+
+All messages must be dictionaries with an `action` key:
+
+```python
+# Valid messages
+{"action": "ping"}
+{"action": "chat", "text": "Hello", "from": "Alice"}
+{"action": "game_state", "players": [...], "timestamp": 123456}
+
+# Invalid - missing "action" key
+{"text": "Hello"}  # Won't be dispatched
+```
+
+<Note>
+  Messages without an `action` key will be passed to the `network_received()` fallback handler with `action=""`.
+</Note>
+
+## Server-Side Handling (Channel)
+
+In your `Channel` subclass, define handlers for client messages:
+
+```python
+from repod import Channel
+
+class GameChannel(Channel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.player_name = "Guest"
+        self.team_id = None
+    
+    def Network_join_team(self, data: dict) -> None:
+        """Handle team join requests."""
+        team_id = data["team_id"]
+        self.team_id = team_id
+        
+        # Notify the client
+        self.send({
+            "action": "team_joined",
+            "team_id": team_id
+        })
+        
+        # Broadcast to other team members
+        for channel in self.server.channels:
+            if channel.team_id == team_id and channel != self:
+                channel.send({
+                    "action": "player_joined_team",
+                    "player": self.player_name,
+                    "team_id": team_id
+                })
+    
+    def Network_chat(self, data: dict) -> None:
+        """Handle chat messages and broadcast to all."""
+        self.server.send_to_all({
+            "action": "chat",
+            "text": data["text"],
+            "from": self.player_name
+        })
+```
+
+### Accessing the Server
+
+Channels have a `server` property that references the parent `Server` instance:
+
+```python
+class GameChannel(Channel):
+    def Network_request_players(self, data: dict) -> None:
+        # Access server state
+        player_count = len(self.server.channels)
+        
+        self.send({
+            "action": "player_list",
+            "count": player_count,
+            "players": [ch.player_name for ch in self.server.channels]
+        })
+```
+
+## Client-Side Handling (ConnectionListener)
+
+In your `ConnectionListener` subclass, define handlers for server messages:
+
+```python
+from repod import ConnectionListener
+
+class GameClient(ConnectionListener):
+    def __init__(self):
+        self.connected = False
+        self.team_id = None
+    
+    def Network_connected(self, data: dict) -> None:
+        """Automatically called when connection succeeds."""
+        print("Connected to server!")
+        self.connected = True
+    
+    def Network_team_joined(self, data: dict) -> None:
+        """Handle successful team join."""
+        self.team_id = data["team_id"]
+        print(f"Joined team {self.team_id}")
+    
+    def Network_chat(self, data: dict) -> None:
+        """Display chat messages."""
+        print(f"{data['from']}: {data['text']}")
+    
+    def Network_game_state(self, data: dict) -> None:
+        """Update local game state from server."""
+        self.update_entities(data["entities"])
+        self.update_score(data["score"])
+```
+
+## Data Validation
+
+Always validate incoming data to prevent crashes and security issues:
+
+```python
+class GameChannel(Channel):
+    def Network_move(self, data: dict) -> None:
+        # Validate required fields
+        if "x" not in data or "y" not in data:
+            self.send({"action": "error", "message": "Missing coordinates"})
+            return
+        
+        try:
+            x = float(data["x"])
+            y = float(data["y"])
+        except (ValueError, TypeError):
+            self.send({"action": "error", "message": "Invalid coordinates"})
+            return
+        
+        # Validate ranges
+        if not (0 <= x <= 1000 and 0 <= y <= 1000):
+            self.send({"action": "error", "message": "Coordinates out of bounds"})
+            return
+        
+        # Process valid move
+        self.player_x = x
+        self.player_y = y
+        self.server.broadcast_player_position(self)
+```
+
+<Warning>
+  Never trust client data. Always validate types, ranges, and permissions before processing messages or updating game state.
+</Warning>
+
+## Fallback Handler
+
+The `network_received()` method is called for messages without a matching handler:
+
+### On Channel (Server-Side)
+
+```python
+class GameChannel(Channel):
+    def network_received(self, data: dict) -> None:
+        """Handle unknown message types."""
+        action = data.get("action", "unknown")
+        print(f"Unhandled message from client: {action}")
+        
+        # Optionally send error response
+        self.send({
+            "action": "error",
+            "message": f"Unknown action: {action}"
+        })
+```
+
+### On ConnectionListener (Client-Side)
+
+```python
+class GameClient(ConnectionListener):
+    def network_received(self, data: dict) -> None:
+        """Handle unknown message types from server."""
+        action = data.get("action", "unknown")
+        print(f"Unhandled server message: {action}")
+```
+
+<Tip>
+  Use `network_received()` for debugging during development. Log unhandled messages to discover missing handlers.
+</Tip>
+
+## Action Types Reference
+
+### Built-in Actions
+
+Repod automatically sends these actions:
+
+| Action | Source | Description |
+|--------|--------|-------------|
+| `connected` | Client/Server | Connection established |
+| `socketConnect` | Client | Low-level socket connected |
+| `disconnected` | Both | Connection closed |
+| `error` | Client | Connection error occurred |
+
+### Custom Actions
+
+Define your own actions for game-specific messages:
+
+```python
+# Game state synchronization
+{"action": "game_state", "entities": [...], "timestamp": 123456}
+
+# Player actions
+{"action": "move", "x": 100, "y": 200}
+{"action": "attack", "target_id": 42}
+{"action": "use_item", "item_id": "potion_health"}
+
+# Chat and social
+{"action": "chat", "text": "Hello!", "channel": "global"}
+{"action": "emote", "type": "wave"}
+
+# Lobby and matchmaking
+{"action": "join_game", "game_id": "abc123"}
+{"action": "ready", "ready": True}
+{"action": "select_character", "character_id": "warrior"}
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Use descriptive action names">
+    Choose clear, specific names: `"player_move"` is better than `"move"`, and `"request_game_list"` is better than `"get_games"`.
+  </Step>
+
+  <Step title="Version your protocol">
+    Include a version field in critical messages to handle protocol changes:
+
+    ```python
+    {"action": "game_state", "version": 2, "data": {...}}
+    ```
+  </Step>
+
+  <Step title="Keep messages small">
+    Send incremental updates instead of full state dumps. For example, send position changes, not the entire game world.
+  </Step>
+
+  <Step title="Document your actions">
+    Maintain a shared constants file for both client and server:
+
+    ```python
+    # actions.py
+    ACTION_MOVE = "move"
+    ACTION_ATTACK = "attack"
+    ACTION_CHAT = "chat"
+    
+    # Use in code
+    self.send({"action": ACTION_MOVE, "x": 10, "y": 20})
+    ```
+  </Step>
+</Steps>
+
+## Complete Example
+
+Here's a complete example showing coordinated message handling:
+
+<CodeGroup>
+```python server.py
+from repod import Channel, Server
+
+class GameChannel(Channel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.nickname = "Anonymous"
+    
+    def Network_nickname(self, data: dict) -> None:
+        # Validate nickname
+        nickname = data.get("nickname", "").strip()
+        if not nickname or len(nickname) > 20:
+            self.send({"action": "error", "message": "Invalid nickname"})
+            return
+        
+        old_name = self.nickname
+        self.nickname = nickname
+        
+        # Notify all clients
+        self.server.send_to_all({
+            "action": "name_changed",
+            "old_name": old_name,
+            "new_name": nickname
+        })
+    
+    def Network_message(self, data: dict) -> None:
+        # Validate message
+        text = data.get("text", "").strip()
+        if not text or len(text) > 500:
+            self.send({"action": "error", "message": "Invalid message"})
+            return
+        
+        # Broadcast to all
+        self.server.send_to_all({
+            "action": "message",
+            "text": text,
+            "nickname": self.nickname
+        })
+
+class GameServer(Server):
+    channel_class = GameChannel
+
+if __name__ == "__main__":
+    GameServer(host="0.0.0.0", port=5071).launch()
+```
+
+```python client.py
+from repod import ConnectionListener
+import time
+
+class GameClient(ConnectionListener):
+    def __init__(self):
+        self.connected = False
+    
+    def Network_connected(self, data: dict) -> None:
+        print("Connected!")
+        self.connected = True
+        
+        # Send our nickname
+        self.send({"action": "nickname", "nickname": "Alice"})
+    
+    def Network_name_changed(self, data: dict) -> None:
+        print(f"{data['old_name']} is now {data['new_name']}")
+    
+    def Network_message(self, data: dict) -> None:
+        print(f"{data['nickname']}: {data['text']}")
+    
+    def Network_error(self, data: dict) -> None:
+        print(f"Error: {data['message']}")
+
+client = GameClient()
+client.connect("localhost", 5071)
+
+while True:
+    client.pump()
+    time.sleep(0.01)
+```
+</CodeGroup>

@@ -1,0 +1,493 @@
+---
+title: Error Handling
+description: Learn how to handle connection errors, implement on_error callbacks, and manage graceful shutdown in repod
+---
+
+Proper error handling is essential for robust multiplayer games. Repod provides multiple hooks for handling connection errors, timeouts, and unexpected disconnections.
+
+## Connection Errors
+
+### Client Connection Failures
+
+When a client fails to connect, it receives an `error` action:
+
+```python
+from repod import ConnectionListener
+
+class GameClient(ConnectionListener):
+    def __init__(self):
+        self.connected = False
+        self.error_message = None
+    
+    def Network_connected(self, data: dict) -> None:
+        print("Connected successfully!")
+        self.connected = True
+    
+    def Network_error(self, data: dict) -> None:
+        # Connection failed
+        error = data.get("error", "Unknown error")
+        self.error_message = error
+        print(f"Connection error: {error}")
+    
+    def Network_disconnected(self, data: dict) -> None:
+        print("Disconnected from server")
+        self.connected = False
+
+client = GameClient()
+client.connect("localhost", 5071)
+
+import time
+time.sleep(1)  # Wait for connection attempt
+
+client.pump()
+if not client.connected and client.error_message:
+    print(f"Failed to connect: {client.error_message}")
+```
+
+### Common Connection Errors
+
+```python
+class GameClient(ConnectionListener):
+    def Network_error(self, data: dict) -> None:
+        error = data.get("error", "")
+        
+        if "Connection refused" in error:
+            print("Server is not running")
+        elif "timed out" in error:
+            print("Connection timed out - server may be overloaded")
+        elif "Network is unreachable" in error:
+            print("No network connection")
+        elif "Name or service not known" in error:
+            print("Invalid hostname")
+        else:
+            print(f"Unknown error: {error}")
+```
+
+<Note>
+  Connection errors are logged internally by repod. Check the logs for detailed error information during development.
+</Note>
+
+## Server-Side Error Handling
+
+### Channel Errors
+
+Override `on_error()` in your `Channel` subclass to handle errors for specific clients:
+
+```python
+from repod import Channel
+
+class GameChannel(Channel):
+    def on_error(self, error: Exception) -> None:
+        """Called when an error occurs with this client connection."""
+        print(f"Error with client {self.addr}: {error}")
+        
+        # Log to file
+        with open("errors.log", "a") as f:
+            f.write(f"[{time.time()}] {self.addr}: {error}\n")
+        
+        # Notify other clients if this was an important player
+        if hasattr(self, "player_id"):
+            self.server.send_to_all({
+                "action": "player_error",
+                "player_id": self.player_id
+            })
+```
+
+### Handling Invalid Messages
+
+Validate and handle malformed messages gracefully:
+
+```python
+class GameChannel(Channel):
+    def Network_move(self, data: dict) -> None:
+        try:
+            x = float(data["x"])
+            y = float(data["y"])
+        except (KeyError, ValueError, TypeError) as e:
+            # Send error back to client
+            self.send({
+                "action": "error",
+                "message": f"Invalid move data: {e}"
+            })
+            return
+        
+        # Validate ranges
+        if not (0 <= x <= 1000 and 0 <= y <= 1000):
+            self.send({
+                "action": "error",
+                "message": "Position out of bounds"
+            })
+            return
+        
+        # Process valid move
+        self.player_x = x
+        self.player_y = y
+```
+
+### Server-Wide Error Handling
+
+```python
+from repod import Server, Channel
+
+class GameServer(Server):
+    channel_class = GameChannel
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.error_count = 0
+    
+    def on_connect(self, channel: GameChannel, addr: tuple[str, int]) -> None:
+        print(f"Client connected: {addr}")
+    
+    def on_disconnect(self, channel: GameChannel) -> None:
+        print(f"Client disconnected: {channel.addr}")
+        
+        # Check if disconnect was due to error
+        if hasattr(channel, "_had_error"):
+            self.error_count += 1
+            print(f"Total error disconnects: {self.error_count}")
+```
+
+## Graceful Shutdown
+
+### Client Shutdown
+
+Properly close client connections on exit:
+
+```python
+import time
+from repod import ConnectionListener
+
+class GameClient(ConnectionListener):
+    def __init__(self):
+        self.running = True
+    
+    def shutdown(self):
+        """Gracefully disconnect from server."""
+        print("Shutting down...")
+        
+        # Send goodbye message
+        self.send({"action": "goodbye"})
+        
+        # Close connection
+        if self.connection:
+            self.connection.close()
+        
+        self.running = False
+
+client = GameClient()
+client.connect("localhost", 5071)
+
+try:
+    while client.running:
+        client.pump()
+        time.sleep(0.01)
+except KeyboardInterrupt:
+    print("\nInterrupted by user")
+finally:
+    client.shutdown()
+```
+
+### Server Shutdown
+
+The `launch()` method handles cleanup automatically:
+
+```python
+from repod import Server, Channel
+
+class GameServer(Server):
+    channel_class = Channel
+
+if __name__ == "__main__":
+    server = GameServer(host="0.0.0.0", port=5071)
+    print("Server starting (Ctrl+C to stop)")
+    
+    try:
+        server.launch()  # Handles KeyboardInterrupt and cleanup
+    except Exception as e:
+        print(f"Server error: {e}")
+    finally:
+        print("Server stopped")
+```
+
+For manual shutdown with asyncio:
+
+```python
+import asyncio
+from repod import Server, Channel
+
+async def main():
+    server = GameServer()
+    await server.start()
+    print("Server started")
+    
+    try:
+        await server.run()
+    except asyncio.CancelledError:
+        print("Server cancelled")
+    finally:
+        await server.stop()  # Closes all client connections
+        print("Server stopped gracefully")
+
+try:
+    asyncio.run(main())
+except KeyboardInterrupt:
+    print("\nShutdown requested")
+```
+
+<Warning>
+  Always call `server.stop()` or use `server.launch()` to ensure all client connections are properly closed and resources are released.
+</Warning>
+
+## Reconnection Strategies
+
+### Basic Reconnection
+
+```python
+from repod import ConnectionListener
+import time
+
+class GameClient(ConnectionListener):
+    def __init__(self, host: str, port: int):
+        self.host = host
+        self.port = port
+        self.running = True
+        self.connected = False
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 5
+    
+    def try_connect(self):
+        """Attempt to connect to the server."""
+        print(f"Connecting to {self.host}:{self.port}...")
+        self.connect(self.host, self.port)
+    
+    def Network_connected(self, data: dict) -> None:
+        print("Connected!")
+        self.connected = True
+        self.reconnect_attempts = 0
+    
+    def Network_error(self, data: dict) -> None:
+        print(f"Connection failed: {data.get('error')}")
+        self.connected = False
+        self.attempt_reconnect()
+    
+    def Network_disconnected(self, data: dict) -> None:
+        print("Disconnected from server")
+        self.connected = False
+        self.attempt_reconnect()
+    
+    def attempt_reconnect(self):
+        """Try to reconnect with exponential backoff."""
+        if self.reconnect_attempts >= self.max_reconnect_attempts:
+            print("Max reconnection attempts reached")
+            self.running = False
+            return
+        
+        self.reconnect_attempts += 1
+        delay = min(2 ** self.reconnect_attempts, 30)  # Cap at 30 seconds
+        print(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts})...")
+        time.sleep(delay)
+        self.try_connect()
+
+client = GameClient("localhost", 5071)
+client.try_connect()
+
+while client.running:
+    client.pump()
+    time.sleep(0.01)
+```
+
+### Advanced Reconnection with State Recovery
+
+```python
+class GameClient(ConnectionListener):
+    def __init__(self, host: str, port: int):
+        self.host = host
+        self.port = port
+        self.session_id = None
+        self.game_state = None
+    
+    def Network_connected(self, data: dict) -> None:
+        if self.session_id:
+            # Reconnecting - request state recovery
+            print("Reconnected! Requesting state recovery...")
+            self.send({
+                "action": "recover_session",
+                "session_id": self.session_id
+            })
+        else:
+            # First connection
+            print("Connected for the first time")
+    
+    def Network_session_created(self, data: dict) -> None:
+        # Server assigned us a session ID
+        self.session_id = data["session_id"]
+        print(f"Session ID: {self.session_id}")
+    
+    def Network_state_recovered(self, data: dict) -> None:
+        # Server restored our game state
+        self.game_state = data["state"]
+        print("Game state recovered!")
+    
+    def Network_recovery_failed(self, data: dict) -> None:
+        # Session expired, start fresh
+        print("Session expired, starting new game")
+        self.session_id = None
+        self.game_state = None
+```
+
+<Tip>
+  Implement exponential backoff for reconnection attempts to avoid overwhelming the server during outages. Cap the maximum delay to prevent users from waiting too long.
+</Tip>
+
+## Timeout Handling
+
+### Client-Side Timeout Detection
+
+```python
+import time
+from repod import ConnectionListener
+
+class GameClient(ConnectionListener):
+    def __init__(self):
+        self.last_server_message = time.time()
+        self.timeout_seconds = 10.0
+    
+    def Network_ping(self, data: dict) -> None:
+        # Server sent keepalive
+        self.last_server_message = time.time()
+        self.send({"action": "pong"})
+    
+    def check_timeout(self) -> bool:
+        """Check if server has timed out."""
+        elapsed = time.time() - self.last_server_message
+        if elapsed > self.timeout_seconds:
+            print("Server timeout detected")
+            return True
+        return False
+
+client = GameClient()
+client.connect("localhost", 5071)
+
+while True:
+    client.pump()
+    
+    if client.check_timeout():
+        print("Server not responding, disconnecting...")
+        break
+    
+    time.sleep(0.1)
+```
+
+### Server-Side Keepalive
+
+```python
+import time
+import asyncio
+from repod import Server, Channel
+
+class GameChannel(Channel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.last_activity = time.time()
+    
+    def Network_pong(self, data: dict) -> None:
+        # Client responded to ping
+        self.last_activity = time.time()
+
+class GameServer(Server):
+    channel_class = GameChannel
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.keepalive_interval = 5.0
+        self.client_timeout = 30.0
+    
+    async def start(self):
+        await super().start()
+        # Start keepalive task
+        asyncio.create_task(self.keepalive_loop())
+    
+    async def keepalive_loop(self):
+        """Send pings and disconnect inactive clients."""
+        while True:
+            await asyncio.sleep(self.keepalive_interval)
+            
+            current_time = time.time()
+            for channel in self.channels[:]:
+                # Send keepalive ping
+                channel.send({"action": "ping"})
+                
+                # Check for timeout
+                if current_time - channel.last_activity > self.client_timeout:
+                    print(f"Client {channel.addr} timed out")
+                    await channel._handle_close()
+```
+
+## Error Recovery Best Practices
+
+<Steps>
+  <Step title="Always validate input">
+    Never trust data from clients. Always validate types, ranges, and permissions:
+
+    ```python
+    def Network_action(self, data: dict) -> None:
+        try:
+            # Validate required fields
+            if "player_id" not in data:
+                raise ValueError("Missing player_id")
+            
+            player_id = int(data["player_id"])
+            
+            # Validate permissions
+            if player_id != self.player_id:
+                raise PermissionError("Not your player")
+            
+            # Process action
+            self.handle_action(data)
+        except Exception as e:
+            self.send({"action": "error", "message": str(e)})
+    ```
+  </Step>
+
+  <Step title="Log errors for debugging">
+    Keep detailed logs during development:
+
+    ```python
+    import logging
+    
+    class GameChannel(Channel):
+        def on_error(self, error: Exception) -> None:
+            logging.error(f"Channel error for {self.addr}: {error}", 
+                         exc_info=True)
+    ```
+  </Step>
+
+  <Step title="Implement user-friendly error messages">
+    Show helpful messages to users:
+
+    ```python
+    def Network_error(self, data: dict) -> None:
+        error = data.get("error", "")
+        
+        if "Connection refused" in error:
+            self.show_message("Unable to connect. Is the server running?")
+        elif "timed out" in error:
+            self.show_message("Connection timed out. Please try again.")
+        else:
+            self.show_message("Connection error. Please check your network.")
+    ```
+  </Step>
+
+  <Step title="Test failure scenarios">
+    Regularly test error handling:
+    - Stop the server while clients are connected
+    - Send malformed messages
+    - Simulate network lag and packet loss
+    - Test with many simultaneous connections
+  </Step>
+</Steps>
+
+<Warning>
+  Never expose internal error details to clients in production. Log detailed errors server-side, but send generic error messages to clients to avoid leaking implementation details.
+</Warning>

@@ -1,80 +1,315 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Build your first multiplayer game with repod in minutes
 ---
 
-## Get started in three steps
+## Overview
 
-Get your documentation site running locally and make your first customization.
+In this guide, you'll build a simple client-server application where the client sends messages to the server, and the server responds. This demonstrates the core concepts of repod:
 
-### Step 1: Set up your local environment
+- Defining a `Channel` subclass for server-side client representation
+- Creating a `Server` subclass with custom connection handling
+- Building a `ConnectionListener` subclass for the client
+- Using action-based message dispatch with `Network_*` callbacks
+- Running synchronous pump loops
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+<Steps>
+  <Step title="Create the server">
+    First, create a file named `server.py`. You need to subclass two classes to make your own server.
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    Each time a client connects, a new `Channel` instance is created, so you subclass `Channel` to make your server-side representation of a client:
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```python server.py
+    from repod import Server, Channel
 
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    class ClientChannel(Channel):
+        
+        def network_received(self, data: dict) -> None:
+            print("Received from client:", data)
+        
+        def Network_myaction(self, data: dict) -> None:
+            print("myaction:", data)
+            # Echo the message back to the client
+            self.send({"action": "hello", "message": "hello client!"})
+    ```
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    <Info>
+      The `network_received()` fallback is called if no specific handler exists. The method `Network_myaction()` is only called if your data has an `"action"` key with a value of `"myaction"`.
+    </Info>
+    
+    Next, subclass `Server`:
+    
+    ```python server.py
+    class MyServer(Server):
+        channel_class = ClientChannel
+        
+        def on_connect(self, channel, addr):
+            print(f"New connection from {addr[0]}:{addr[1]}")
+            print(f"Total clients: {len(self.channels)}")
+    ```
+    
+    Set `channel_class` to the Channel subclass you created above. The `on_connect()` method is called whenever a new client connects.
+    
+    To run the server, call `launch()`:
+    
+    ```python server.py
+    if __name__ == "__main__":
+        MyServer(host="0.0.0.0", port=5071).launch()
+    ```
+    
+    <Note>
+      `launch()` handles the event loop internally and catches `Ctrl+C` for clean shutdown. Use `host="0.0.0.0"` to listen on all network interfaces.
+    </Note>
+  </Step>
+  
+  <Step title="Create the client">
+    Create a file named `client.py`. To connect to your server, subclass `ConnectionListener`:
+    
+    ```python client.py
+    import time
+    from repod import ConnectionListener
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    class MyClient(ConnectionListener):
+        
+        def Network_connected(self, data: dict) -> None:
+            print("Connected to the server")
+            # Send a message to the server
+            self.send({"action": "myaction", "blah": 123, "things": [3, 4, 3, 4, 7]})
+        
+        def Network_error(self, data: dict) -> None:
+            print("Error:", data["error"])
+        
+        def Network_disconnected(self, data: dict) -> None:
+            print("Disconnected from the server")
+        
+        def Network_hello(self, data: dict) -> None:
+            print("Received hello:", data["message"])
+    ```
+    
+    Network events are received by `Network_*` callback methods. Replace `*` with the value of the `"action"` key you want to catch. The `connected`, `disconnected`, and `error` events are sent automatically by repod.
+    
+    Connect and pump:
+    
+    ```python client.py
+    if __name__ == "__main__":
+        client = MyClient()
+        client.connect("localhost", 5071)
+        
+        try:
+            while True:
+                client.pump()
+                time.sleep(0.01)
+        except KeyboardInterrupt:
+            print("\nDisconnecting...")
+    ```
+    
+    <Warning>
+      Call `pump()` once per game loop and repod handles everything — reading from the socket, deserializing, and dispatching to your `Network_*` methods.
+    </Warning>
+  </Step>
+  
+  <Step title="Run the server">
+    Open a terminal and start the server:
+    
+    ```bash
+    python server.py
+    ```
+    
+    You should see output indicating the server is running (the exact output depends on your logging configuration). The server will block and wait for connections.
+  </Step>
+  
+  <Step title="Run the client">
+    Open another terminal and start the client:
+    
+    ```bash
+    python client.py
+    ```
+    
+    You should see output like:
+    
+    ```
+    Connected to the server
+    Received hello: hello client!
+    ```
+    
+    On the server terminal, you should see:
+    
+    ```
+    New connection from 127.0.0.1:xxxxx
+    Total clients: 1
+    myaction: {'action': 'myaction', 'blah': 123, 'things': [3, 4, 3, 4, 7]}
+    ```
+  </Step>
+</Steps>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+## Complete code
 
-### Step 3: Go live
+Here are the complete files for reference:
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+<CodeGroup>
+```python server.py
+from repod import Server, Channel
+
+class ClientChannel(Channel):
+    
+    def network_received(self, data: dict) -> None:
+        print("Received from client:", data)
+    
+    def Network_myaction(self, data: dict) -> None:
+        print("myaction:", data)
+        # Echo the message back to the client
+        self.send({"action": "hello", "message": "hello client!"})
+
+class MyServer(Server):
+    channel_class = ClientChannel
+    
+    def on_connect(self, channel, addr):
+        print(f"New connection from {addr[0]}:{addr[1]}")
+        print(f"Total clients: {len(self.channels)}")
+
+if __name__ == "__main__":
+    MyServer(host="0.0.0.0", port=5071).launch()
+```
+
+```python client.py
+import time
+from repod import ConnectionListener
+
+class MyClient(ConnectionListener):
+    
+    def Network_connected(self, data: dict) -> None:
+        print("Connected to the server")
+        # Send a message to the server
+        self.send({"action": "myaction", "blah": 123, "things": [3, 4, 3, 4, 7]})
+    
+    def Network_error(self, data: dict) -> None:
+        print("Error:", data["error"])
+    
+    def Network_disconnected(self, data: dict) -> None:
+        print("Disconnected from the server")
+    
+    def Network_hello(self, data: dict) -> None:
+        print("Received hello:", data["message"])
+
+if __name__ == "__main__":
+    client = MyClient()
+    client.connect("localhost", 5071)
+    
+    try:
+        while True:
+            client.pump()
+            time.sleep(0.01)
+    except KeyboardInterrupt:
+        print("\nDisconnecting...")
+```
+</CodeGroup>
+
+## Understanding the flow
+
+Let's break down what happens when you run this example:
+
+<Steps>
+  <Step title="Server starts">
+    The server binds to `0.0.0.0:5071` and begins listening for TCP connections.
+  </Step>
+  
+  <Step title="Client connects">
+    When `client.connect()` is called, a background thread is started that establishes a TCP connection to the server. Once connected, the server:
+    
+    1. Creates a new `ClientChannel` instance for this connection
+    2. Adds it to `server.channels` list
+    3. Calls `on_connect()` callback
+    4. Sends `{"action": "connected"}` to the client
+  </Step>
+  
+  <Step title="Client receives connected event">
+    The client's pump loop receives the `{"action": "connected"}` message and dispatches it to `Network_connected()`, which sends a message to the server.
+  </Step>
+  
+  <Step title="Server processes message">
+    The server receives `{"action": "myaction", ...}` and dispatches it to `ClientChannel.Network_myaction()`, which echoes a response back.
+  </Step>
+  
+  <Step title="Client receives response">
+    The client's pump loop receives `{"action": "hello", ...}` and dispatches it to `Network_hello()`, which prints the message.
+  </Step>
+</Steps>
+
+## Key concepts
+
+### Action-based dispatch
+
+repod uses the `"action"` key in message dictionaries to route messages to the appropriate handler:
+
+```python
+# This message calls Network_myaction()
+client.send({"action": "myaction", "data": "..."}) 
+
+# This message calls Network_hello()
+client.send({"action": "hello", "data": "..."})
+
+# This message calls network_received() fallback
+client.send({"somekey": "value"})
+```
+
+### Synchronous pump loops
+
+The client runs networking in a background thread, but you interact with it synchronously from your main game loop:
+
+```python
+while True:
+    # Handle input
+    handle_user_input()
+    
+    # Process network events
+    client.pump()
+    
+    # Update game state
+    update_game_state()
+    
+    # Render
+    render_frame()
+    
+    time.sleep(0.01)
+```
+
+This works with any game framework that has a main loop: pygame, raylib, arcade, pyglet, etc. Just drop `pump()` into the loop.
+
+### Sending data
+
+Both client and server can send arbitrary data structures:
+
+```python
+# Send simple messages
+client.send({"action": "move", "x": 10, "y": 20})
+
+# Send complex nested data
+channel.send({
+    "action": "gamestate",
+    "players": [
+        {"id": 1, "name": "Alice", "pos": [10, 20]},
+        {"id": 2, "name": "Bob", "pos": [30, 40]}
+    ],
+    "items": ["sword", "shield", "potion"],
+    "time": 12.5
+})
+```
+
+All data is automatically serialized with msgpack, so you can send strings, numbers, lists, dictionaries, and even binary data.
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Core Concepts" icon="book" href="/concepts/overview">
+    Dive deeper into how repod works under the hood
+  </Card>
+  <Card title="Building a Server" icon="server" href="/guides/building-server">
+    Learn advanced server patterns and best practices
+  </Card>
+  <Card title="Building a Client" icon="user" href="/guides/building-client">
+    Integrate repod with game frameworks like pygame
+  </Card>
+  <Card title="Examples" icon="code" href="/examples/chat">
+    Explore complete example projects with source code
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

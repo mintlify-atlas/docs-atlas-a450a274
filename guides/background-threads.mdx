@@ -1,0 +1,404 @@
+---
+title: Background Threads
+description: Learn how to run repod servers and clients in background threads alongside your game loop
+---
+
+Repod is designed to integrate seamlessly with synchronous game loops (like Pygame or Pyglet) by running networking in background daemon threads. This keeps your main game loop simple and responsive.
+
+## Server Background Threads
+
+Use `start_background()` to run a server in a daemon thread while your main thread handles game logic:
+
+```python
+from repod import Server, Channel
+import time
+
+class GameChannel(Channel):
+    def Network_input(self, data: dict) -> None:
+        # Process player input
+        self.server.game_state.update_player(self, data)
+
+class GameServer(Server):
+    channel_class = GameChannel
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.game_state = GameState()
+
+# Start server in background
+server = GameServer(host="0.0.0.0", port=5071)
+server_thread = server.start_background()
+
+print(f"Server running on background thread: {server_thread.name}")
+
+# Main game loop continues
+while True:
+    server.game_state.update()
+    
+    # Broadcast state to all clients
+    server.send_to_all({
+        "action": "game_state",
+        "data": server.game_state.serialize()
+    })
+    
+    time.sleep(0.016)  # ~60 FPS
+```
+
+### Thread Properties
+
+The thread returned by `start_background()` is a daemon thread:
+
+```python
+server_thread = server.start_background()
+
+print(f"Daemon: {server_thread.daemon}")  # True
+print(f"Alive: {server_thread.is_alive()}")  # True
+print(f"Name: {server_thread.name}")  # Thread-N
+```
+
+<Note>
+  Daemon threads automatically terminate when the main program exits, so you don't need explicit cleanup in most cases.
+</Note>
+
+## Client Background Threads
+
+Clients automatically run networking in a background thread when you call `connect()`:
+
+```python
+from repod import ConnectionListener
+import time
+import pygame
+
+class GameClient(ConnectionListener):
+    def __init__(self):
+        self.game_state = None
+    
+    def Network_game_state(self, data: dict) -> None:
+        # Updates from background thread
+        self.game_state = data["data"]
+
+# Initialize client
+client = GameClient()
+client.connect("localhost", 5071)  # Starts background thread
+
+# Initialize Pygame
+pygame.init()
+screen = pygame.display.set_mode((800, 600))
+clock = pygame.time.Clock()
+
+# Main game loop (synchronous)
+running = True
+while running:
+    # Handle events
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+    
+    # Process network messages
+    client.pump()
+    
+    # Send player input to server
+    keys = pygame.key.get_pressed()
+    client.send({
+        "action": "input",
+        "left": keys[pygame.K_LEFT],
+        "right": keys[pygame.K_RIGHT]
+    })
+    
+    # Render (using state from background thread)
+    if client.game_state:
+        render_game(screen, client.game_state)
+    
+    pygame.display.flip()
+    clock.tick(60)
+
+pygame.quit()
+```
+
+## Host & Client (Peer-to-Peer)
+
+Run both a server and a client in the same process for "Host Game" scenarios:
+
+```python
+from repod import Server, Channel, ConnectionListener
+import time
+
+class GameChannel(Channel):
+    def Network_move(self, data: dict) -> None:
+        # Relay moves to all clients
+        self.server.send_to_all(data)
+
+class GameServer(Server):
+    channel_class = GameChannel
+
+class GameClient(ConnectionListener):
+    def Network_move(self, data: dict) -> None:
+        # Update local state
+        print(f"Player moved: {data}")
+
+# Start server in background
+server = GameServer(host="0.0.0.0", port=5071)
+server.start_background()
+print("Server started in background")
+
+# Connect as a client
+client = GameClient()
+client.connect("localhost", 5071)
+print("Connected as client")
+
+# Main game loop
+while True:
+    client.pump()
+    
+    # Send periodic updates
+    client.send({"action": "move", "x": 100, "y": 200})
+    
+    time.sleep(0.1)
+```
+
+<Tip>
+  This pattern is perfect for peer-to-peer multiplayer where one player hosts the game. The host runs both a server (for other players) and a client (to play themselves).
+</Tip>
+
+## Thread Safety
+
+Repod's API is designed to be thread-safe for cross-thread calls:
+
+### Safe Operations
+
+These operations are safe to call from any thread:
+
+```python
+# From main thread while server runs in background
+server.send_to_all({"action": "update"})
+
+# From main thread while client runs in background  
+client.send({"action": "ping"})
+
+# Send from Channel to client
+channel.send({"action": "response"})
+```
+
+### Internal Mechanisms
+
+Repod uses thread-safe queues and asyncio's `call_soon_threadsafe()`:
+
+```python
+# In channel.py (excerpt)
+if loop is not None and loop.is_running():
+    try:
+        loop.call_soon_threadsafe(self._send_queue.put_nowait, outgoing)
+    except RuntimeError:
+        return 0
+else:
+    self._send_queue.put_nowait(outgoing)
+```
+
+<Warning>
+  While `send()` operations are thread-safe, avoid accessing internal attributes like `_send_queue` or `_receive_queue` directly from multiple threads unless you know what you're doing.
+</Warning>
+
+## Game Loop Integration
+
+### Pygame Example
+
+```python
+import pygame
+from repod import ConnectionListener
+
+class GameClient(ConnectionListener):
+    def __init__(self):
+        self.player_pos = {"x": 400, "y": 300}
+    
+    def Network_update(self, data: dict) -> None:
+        self.player_pos = data["pos"]
+
+pygame.init()
+screen = pygame.display.set_mode((800, 600))
+clock = pygame.time.Clock()
+
+client = GameClient()
+client.connect("localhost", 5071)
+
+running = True
+while running:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+    
+    # Network update (processes messages from background thread)
+    client.pump()
+    
+    # Game logic
+    keys = pygame.key.get_pressed()
+    if keys[pygame.K_SPACE]:
+        client.send({"action": "jump"})
+    
+    # Rendering
+    screen.fill((0, 0, 0))
+    pygame.draw.circle(screen, (255, 0, 0), 
+                      (client.player_pos["x"], client.player_pos["y"]), 20)
+    pygame.display.flip()
+    clock.tick(60)
+
+pygame.quit()
+```
+
+### Pyglet Example
+
+```python
+import pyglet
+from repod import ConnectionListener
+
+class GameClient(ConnectionListener):
+    def __init__(self):
+        self.entities = []
+    
+    def Network_entities(self, data: dict) -> None:
+        self.entities = data["entities"]
+
+window = pyglet.window.Window(800, 600)
+client = GameClient()
+client.connect("localhost", 5071)
+
+@window.event
+def on_draw():
+    window.clear()
+    for entity in client.entities:
+        # Draw entities
+        pass
+
+def update(dt):
+    # Process network messages
+    client.pump()
+    
+    # Send input
+    client.send({"action": "input", "time": dt})
+
+pyglet.clock.schedule_interval(update, 1/60.0)
+pyglet.app.run()
+```
+
+### Custom Game Loop
+
+```python
+import time
+from repod import ConnectionListener, Server, Channel
+
+class GameChannel(Channel):
+    def Network_action(self, data: dict) -> None:
+        # Process player actions
+        pass
+
+class GameServer(Server):
+    channel_class = GameChannel
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tick = 0
+
+class GameClient(ConnectionListener):
+    def Network_tick(self, data: dict) -> None:
+        print(f"Server tick: {data['tick']}")
+
+# For a dedicated server
+server = GameServer(host="0.0.0.0", port=5071)
+server_thread = server.start_background()
+
+last_time = time.time()
+while True:
+    current_time = time.time()
+    delta = current_time - last_time
+    last_time = current_time
+    
+    # Update game logic at fixed timestep
+    server.tick += 1
+    server.send_to_all({"action": "tick", "tick": server.tick})
+    
+    # Sleep for fixed timestep (e.g., 20 FPS server)
+    time.sleep(0.05)
+```
+
+## Error Handling in Background Threads
+
+Errors in background threads are logged but won't crash your main program:
+
+```python
+from repod import Channel
+
+class GameChannel(Channel):
+    def on_error(self, error: Exception) -> None:
+        """Called when an error occurs in the network thread."""
+        print(f"Network error: {error}")
+        # Log to file, show to user, etc.
+```
+
+For clients, handle errors via the `Network_error` handler:
+
+```python
+class GameClient(ConnectionListener):
+    def Network_error(self, data: dict) -> None:
+        error_msg = data.get("error", "Unknown error")
+        print(f"Connection error: {error_msg}")
+        # Show error dialog, attempt reconnect, etc.
+```
+
+<Warning>
+  Since background threads run as daemons, uncaught exceptions won't prevent the main program from exiting. Always implement `on_error` handlers to log issues during development.
+</Warning>
+
+## Best Practices
+
+<Steps>
+  <Step title="Keep handlers fast">
+    Network handlers run in the main thread (after `pump()`), so keep them quick to avoid blocking your game loop:
+
+    ```python
+    def Network_large_update(self, data: dict) -> None:
+        # BAD: Heavy processing in handler
+        self.process_heavy_data(data)  # Blocks game loop!
+        
+        # GOOD: Queue for later processing
+        self.update_queue.append(data)
+    ```
+  </Step>
+
+  <Step title="Call pump() regularly">
+    Call `pump()` at least once per frame to minimize input lag:
+
+    ```python
+    while running:
+        client.pump()  # First thing in loop
+        # ... rest of game logic
+    ```
+  </Step>
+
+  <Step title="Handle disconnections gracefully">
+    Always implement disconnect handlers:
+
+    ```python
+    def Network_disconnected(self, data: dict) -> None:
+        print("Lost connection to server")
+        self.running = False
+        # Show "Disconnected" screen
+    ```
+  </Step>
+
+  <Step title="Use background servers for hosting">
+    When players host games, use `start_background()` so the host can play too:
+
+    ```python
+    # Host starts server
+    server = GameServer()
+    server.start_background()
+    
+    # Host also connects as client
+    client = GameClient()
+    client.connect("localhost", 5071)
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  For dedicated servers (no game loop), use `server.launch()` instead of `start_background()`. This blocks and runs the server in the main thread.
+</Tip>

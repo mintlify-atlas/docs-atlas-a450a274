@@ -1,0 +1,478 @@
+---
+title: Client-Server Model
+description: Deep dive into server architecture, channel lifecycle, and the background thread model
+---
+
+repod uses a classic **one-channel-per-client** architecture. Each time a client connects, the server creates a new `Channel` instance to represent that connection.
+
+## Server Architecture
+
+The [`Server`](/api/server#server) class is responsible for:
+
+- Binding to a TCP port and accepting connections
+- Creating a `Channel` instance for each client
+- Managing the list of active channels
+- Broadcasting messages to all clients
+
+### Server Lifecycle
+
+A server goes through these stages:
+
+<Steps>
+  <Step title="Initialization">
+    Create the server with `Server(host, port)`. This doesn't bind the socket yet.
+    
+    ```python
+    server = GameServer(host="0.0.0.0", port=5071)
+    ```
+  </Step>
+  
+  <Step title="Start">
+    Call `await start()` to bind to the port and begin accepting connections.
+    
+    ```python
+    await server.start()
+    ```
+    
+    This calls `asyncio.start_server()` internally and configures the `_handle_client` callback.
+  </Step>
+  
+  <Step title="Run">
+    Call `await run()` to keep the server alive. This blocks until the task is cancelled.
+    
+    ```python
+    await server.run()  # Blocks forever
+    ```
+  </Step>
+  
+  <Step title="Stop">
+    Call `await stop()` to disconnect all clients and close the server socket.
+    
+    ```python
+    await server.stop()
+    ```
+  </Step>
+</Steps>
+
+### launch() Convenience Method
+
+For simple servers, use `launch()` to handle everything:
+
+```python server.py
+from repod import Server, Channel
+
+class GameChannel(Channel):
+    def Network_chat(self, data: dict) -> None:
+        self.server.send_to_all(data)
+
+class GameServer(Server):
+    channel_class = GameChannel
+
+GameServer(host="0.0.0.0", port=5071).launch()
+```
+
+From `server.py:93-117`:
+
+```python server.py
+def launch(self) -> None:
+    """Start the server and block forever.
+
+    Convenience wrapper that hides asyncio boilerplate.  Equivalent
+    to calling :meth:`start` then :meth:`run` inside
+    ``asyncio.run()``.  Handles ``KeyboardInterrupt`` gracefully.
+    """
+
+    async def _main() -> None:
+        await self.start()
+        try:
+            await self.run()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await self.stop()
+
+    try:
+        asyncio.run(_main())
+    except KeyboardInterrupt:
+        log.info("server_stopped")
+```
+
+This:
+
+1. Creates a new asyncio event loop
+2. Starts the server
+3. Runs until interrupted
+4. Handles `Ctrl+C` gracefully
+5. Cleans up all channels
+
+## Channel Instances
+
+Each connected client gets its own [`Channel`](/api/channel#channel) instance. Channels are created automatically by the server when a client connects.
+
+### Channel Lifecycle
+
+From `server.py:181-210`, here's what happens when a client connects:
+
+```python server.py
+async def _handle_client(
+    self,
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+) -> None:
+    """Handle a newly connected client."""
+    # 1. Create the channel instance
+    channel = self.channel_class(reader, writer, server=self)
+    self.channels.append(channel)
+    addr = writer.get_extra_info("peername")
+
+    log.info(
+        "client_connected",
+        addr=f"{addr[0]}:{addr[1]}",
+        clients=len(self.channels),
+    )
+
+    # 2. Send initial connected message
+    channel.send({"action": "connected"})
+    
+    # 3. Call lifecycle hooks
+    channel.on_connect()
+    self.on_connect(channel, addr)
+
+    # 4. Run the channel's read/write/process loops
+    try:
+        await asyncio.gather(
+            channel._read_loop(),
+            channel._write_loop(),
+            self._process_loop(channel),
+        )
+    except Exception as e:
+        channel.on_error(e)
+    finally:
+        await self._remove_channel(channel)
+```
+
+<Steps>
+  <Step title="Channel creation">
+    The server instantiates `self.channel_class` (your custom Channel subclass) and adds it to `self.channels`.
+  </Step>
+  
+  <Step title="Initial message">
+    The server sends `{"action": "connected"}` to the client automatically.
+  </Step>
+  
+  <Step title="Lifecycle hooks">
+    Both `channel.on_connect()` and `server.on_connect(channel, addr)` are called.
+  </Step>
+  
+  <Step title="Concurrent loops">
+    Three asyncio tasks run concurrently:
+    - `_read_loop()`: reads from socket, parses frames, enqueues messages
+    - `_write_loop()`: drains send queue to socket
+    - `_process_loop()`: drains receive queue, dispatches to `Network_*` methods
+  </Step>
+  
+  <Step title="Cleanup">
+    When any loop exits (disconnect, error, etc.), the channel is removed and `on_disconnect()` is called.
+  </Step>
+</Steps>
+
+### Channel Attributes
+
+Each channel has these useful attributes:
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `self.server` | `Server` | Reference to the parent server |
+| `self.addr` | `tuple[str, int]` | Remote client's `(host, port)` |
+| `self.is_connected` | `bool` | Whether the channel is still active |
+
+```python channel.py
+class GameChannel(Channel):
+    def Network_chat(self, data: dict) -> None:
+        print(f"Message from {self.addr[0]}:{self.addr[1]}")
+        
+        # Broadcast to all OTHER clients
+        for channel in self.server.channels:
+            if channel != self:
+                channel.send(data)
+```
+
+### Channel Hooks
+
+Override these methods to customize behavior:
+
+#### on_connect()
+
+Called immediately after the channel is created, before any messages are processed.
+
+```python channel.py
+class GameChannel(Channel):
+    def on_connect(self) -> None:
+        # Per-client setup
+        self.player_id = generate_id()
+        self.send({"action": "welcome", "id": self.player_id})
+```
+
+#### on_close()
+
+Called when the connection is closed (gracefully or due to error).
+
+```python channel.py
+class GameChannel(Channel):
+    def on_close(self) -> None:
+        # Per-client cleanup
+        print(f"Client {self.addr} disconnected")
+```
+
+#### on_error(error)
+
+Called when an exception occurs in the channel's loops.
+
+```python channel.py
+class GameChannel(Channel):
+    def on_error(self, error: Exception) -> None:
+        print(f"Channel error: {error}")
+        # Custom error handling
+```
+
+## Client Connection Process
+
+The [`Client`](/api/connection-listener#client) class handles the client side of the connection.
+
+### Low-Level Client
+
+The `Client` class runs asyncio in a background thread:
+
+```python low_level.py
+from repod import Client
+
+client = Client(host="localhost", port=5071)
+client.start_background()
+
+# Send messages from main thread
+client.send({"action": "hello"})
+
+# Poll for received messages
+while not client._receive_queue.empty():
+    message = client._receive_queue.get()
+    print(message)
+```
+
+From `client.py:81-86`:
+
+```python client.py
+def start_background(self) -> None:
+    """Start the network event loop in a daemon thread."""
+    if self._thread is None or not self._thread.is_alive():
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread.start()
+```
+
+### High-Level ConnectionListener
+
+Most users prefer [`ConnectionListener`](/api/connection-listener#connectionlistener), which wraps `Client` and provides a clean callback API:
+
+```python game_client.py
+import time
+from repod import ConnectionListener
+
+class GameClient(ConnectionListener):
+    def Network_connected(self, data: dict) -> None:
+        print("Connected!")
+        self.send({"action": "hello"})
+    
+    def Network_chat(self, data: dict) -> None:
+        print(f"Chat: {data['text']}")
+
+client = GameClient()
+client.connect("localhost", 5071)
+
+while True:
+    client.pump()  # Process queued messages
+    time.sleep(0.01)
+```
+
+From `client.py:219-235`:
+
+```python client.py
+def connect(
+    self,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+) -> None:
+    """Connect to a remote server.
+
+    Creates a :class:`Client` and starts its background network
+    thread.
+    """
+    log.info("connecting", host=host, port=port)
+    self._connection = Client(host, port)
+    self._connection.start_background()
+```
+
+The `connect()` method:
+
+1. Creates a `Client` instance
+2. Calls `start_background()` to spawn the network thread
+3. The background thread connects asynchronously
+
+### pump() Method
+
+The `pump()` method is the heart of the client-side API. Call it once per frame in your game loop.
+
+From `client.py:242-266`:
+
+```python client.py
+def pump(self) -> None:
+    """Process all pending network messages.
+
+    Call this once per frame in your game loop.  Each queued message
+    is dispatched to the matching ``Network_{action}`` method, or to
+    :meth:`network_received` as a fallback.
+    """
+    if self._connection is None:
+        return
+
+    while not self._connection._receive_queue.empty():
+        try:
+            data = self._connection._receive_queue.get_nowait()
+        except queue.Empty:
+            break
+
+        action = data.get("action", "")
+        method_name = f"Network_{action}"
+        handler = getattr(self, method_name, None)
+        if handler is not None:
+            log.debug("message_dispatched", action=action)
+            handler(data)
+        else:
+            log.debug("message_unhandled", action=action)
+            self.network_received(data)
+```
+
+<Info>
+`pump()` must be called from your **main game loop thread**. It is not thread-safe.
+</Info>
+
+## Background Thread Model
+
+repod uses threads to keep your main game loop synchronous and simple.
+
+### Server Background Mode
+
+Use `start_background()` when you need the main thread free for other work (e.g., hosting a game while playing):
+
+```python host_and_play.py
+from repod import Server, Channel, ConnectionListener
+import time
+
+class GameChannel(Channel):
+    def Network_move(self, data: dict) -> None:
+        self.server.send_to_all(data)
+
+class GameServer(Server):
+    channel_class = GameChannel
+
+class GameClient(ConnectionListener):
+    def Network_move(self, data: dict) -> None:
+        print(f"Player moved: {data}")
+
+# Start server in background
+server = GameServer(host="127.0.0.1", port=5071)
+server_thread = server.start_background()
+
+# Connect as a client in main thread
+client = GameClient()
+client.connect("127.0.0.1", 5071)
+
+# Game loop
+while True:
+    client.pump()
+    # Your game logic here
+    time.sleep(0.01)
+```
+
+From `server.py:168-179`:
+
+```python server.py
+def _run_in_thread(self) -> None:
+    """Create a new event loop and run the server inside it."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(self.start())
+    try:
+        loop.run_until_complete(self.run())
+    except Exception as exc:
+        log.error("background_server_error", error=str(exc))
+    finally:
+        loop.run_until_complete(self.stop())
+        loop.close()
+```
+
+The background thread:
+
+1. Creates a new asyncio event loop
+2. Runs `start()` and `run()` in that loop
+3. Handles exceptions
+4. Cleans up on exit
+
+### Client Background Thread
+
+The client **always** uses a background thread for networking. From `client.py:116-125`:
+
+```python client.py
+def _run_loop(self) -> None:
+    """Run the asyncio event loop in the background thread."""
+    self._loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(self._loop)
+    try:
+        self._loop.run_until_complete(self._network_task())
+    except Exception as exc:
+        log.error("network_thread_error", error=str(exc))
+    finally:
+        self._loop.close()
+```
+
+<Warning>
+**Thread Safety**
+
+- `send()` is thread-safe (uses thread-safe queues)
+- `pump()` is **NOT** thread-safe (must only be called from main thread)
+- `close()` is thread-safe
+</Warning>
+
+## TCP_NODELAY Optimization
+
+Both `Client` and `Channel` disable **Nagle's algorithm** for low-latency real-time communication.
+
+From `channel.py:69-73`:
+
+```python channel.py
+# Disable Nagle's algorithm for low-latency real-time communication.
+sock: socket.socket | None = writer.get_extra_info("socket")
+if sock is not None:
+    with contextlib.suppress(OSError):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+```
+
+Nagle's algorithm batches small packets to reduce overhead, but this adds latency. For games, we want messages sent **immediately**, so `TCP_NODELAY` is enabled.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Actions & Dispatch" icon="route" href="/concepts/actions-dispatch">
+    Learn how messages are routed to Network_* methods
+  </Card>
+  
+  <Card title="Server API" icon="server" href="/api/server">
+    Full API reference for the Server class
+  </Card>
+  
+  <Card title="Channel API" icon="network-wired" href="/api/channel">
+    Full API reference for the Channel class
+  </Card>
+  
+  <Card title="Client API" icon="laptop" href="/api/connection-listener">
+    Full API reference for Client and ConnectionListener
+  </Card>
+</CardGroup>

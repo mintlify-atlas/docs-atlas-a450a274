@@ -1,0 +1,302 @@
+---
+title: Building a Client
+description: Learn how to create a repod client that connects to servers and handles messages
+---
+
+The `ConnectionListener` class provides a high-level interface for building game clients. It runs networking in a background thread, keeping your main game loop synchronous and simple.
+
+## Creating a Client Subclass
+
+Clients are built by subclassing `ConnectionListener` and defining message handlers:
+
+<Steps>
+  <Step title="Subclass ConnectionListener">
+    Create a class that inherits from `ConnectionListener`:
+
+    ```python client.py
+    from repod import ConnectionListener
+
+    class GameClient(ConnectionListener):
+        """Client that connects to a game server."""
+        
+        def __init__(self):
+            self.running = True
+            self.player_name = "Guest"
+    ```
+  </Step>
+
+  <Step title="Define Network_* handlers">
+    Create methods that handle specific message types from the server:
+
+    ```python client.py
+    def Network_connected(self, data: dict) -> None:
+        print("Connected to server!")
+        # Send initial data to server
+        self.send({
+            "action": "join",
+            "name": self.player_name
+        })
+    
+    def Network_game_state(self, data: dict) -> None:
+        # Update local game state from server
+        self.update_game(data["state"])
+    ```
+  </Step>
+
+  <Step title="Connect and pump">
+    Call `connect()` to establish the connection, then call `pump()` in your game loop:
+
+    ```python client.py
+    client = GameClient()
+    client.connect("localhost", 5071)
+    
+    while client.running:
+        client.pump()  # Process network messages
+        # ... rest of your game loop
+        time.sleep(0.01)
+    ```
+  </Step>
+</Steps>
+
+## Connecting to a Server
+
+The `connect()` method creates a background network thread and attempts to connect:
+
+```python
+class GameClient(ConnectionListener):
+    def __init__(self, host: str = "127.0.0.1", port: int = 5071):
+        self.running = True
+        self.connect(host, port)  # Non-blocking
+        print("Connecting...")
+```
+
+<Note>
+  The `connect()` method returns immediately. The actual connection happens asynchronously in the background thread. Use `Network_connected` to know when the connection succeeds.
+</Note>
+
+### Connection Events
+
+The client automatically sends these action types:
+
+- **`connected`** - Connection established successfully
+- **`socketConnect`** - Low-level socket connected (internal)
+- **`error`** - Connection failed (includes error message)
+- **`disconnected`** - Connection closed
+
+```python
+class GameClient(ConnectionListener):
+    def Network_connected(self, data: dict) -> None:
+        print("Connected to server!")
+    
+    def Network_error(self, data: dict) -> None:
+        print(f"Connection error: {data.get('error', 'Unknown')}")
+        self.running = False
+    
+    def Network_disconnected(self, data: dict) -> None:
+        print("Disconnected from server")
+        self.running = False
+```
+
+## The Pump Loop
+
+The `pump()` method processes all pending network messages. Call it once per frame in your game loop:
+
+```python
+import time
+
+client = GameClient()
+client.connect("localhost", 5071)
+
+while client.running:
+    client.pump()  # Dispatch queued messages
+    
+    # Your game logic here
+    update_game()
+    render_frame()
+    
+    time.sleep(0.01)  # ~100 FPS
+```
+
+### How Pump Works
+
+When you call `pump()`, it:
+
+1. Checks the receive queue for new messages
+2. For each message, looks for a `Network_{action}` method
+3. Calls the matching handler with the message data
+4. Falls back to `network_received()` for unhandled actions
+
+```python
+class GameClient(ConnectionListener):
+    def network_received(self, data: dict) -> None:
+        """Fallback for unhandled message types."""
+        print(f"Unhandled message: {data.get('action')}")
+```
+
+<Tip>
+  Call `pump()` frequently (every frame) to minimize input lag. The method returns immediately if there are no queued messages.
+</Tip>
+
+## Sending Messages
+
+Use the `send()` method to send messages to the server:
+
+```python
+class GameClient(ConnectionListener):
+    def send_chat_message(self, text: str) -> None:
+        self.send({
+            "action": "message",
+            "text": text
+        })
+    
+    def send_player_input(self, keys: dict) -> None:
+        self.send({
+            "action": "input",
+            "keys": keys,
+            "timestamp": time.time()
+        })
+```
+
+The `send()` method returns the number of bytes queued, or `0` if disconnected:
+
+```python
+bytes_sent = self.send({"action": "ping"})
+if bytes_sent == 0:
+    print("Not connected!")
+```
+
+## Complete Example
+
+Here's a complete chat client implementation:
+
+<CodeGroup>
+```python client.py
+import sys
+import threading
+import time
+from repod import ConnectionListener
+
+class ChatClient(ConnectionListener):
+    """Chat client that connects to a chat server."""
+    
+    def __init__(self, host: str = "127.0.0.1", port: int = 5071):
+        self.running = True
+        self.connect(host, port)
+        print("Chat client started")
+    
+    def set_nickname(self, nickname: str) -> None:
+        """Send the chosen nickname to the server."""
+        self.send({"action": "nickname", "nickname": nickname})
+    
+    def send_message(self, text: str) -> None:
+        """Send a chat message to the server."""
+        self.send({"action": "message", "text": text})
+    
+    def run(self) -> None:
+        """Synchronous main loop (ideal for game loops like pygame)."""
+        while self.running:
+            self.pump()
+            time.sleep(0.01)
+    
+    def Network_connected(self, data: dict) -> None:
+        print("Connected to server!")
+    
+    def Network_system(self, data: dict) -> None:
+        print(f"SYSTEM: {data['text']}")
+    
+    def Network_message(self, data: dict) -> None:
+        print(f"{data['nickname']}: {data['text']}")
+    
+    def Network_players(self, data: dict) -> None:
+        print(f"Players: {', '.join(data['list'])}")
+    
+    def Network_error(self, data: dict) -> None:
+        print(f"Error: {data.get('error', 'Unknown error')}")
+        self.running = False
+    
+    def Network_disconnected(self, data: dict) -> None:
+        print("Disconnected from server")
+        self.running = False
+
+def input_thread(client: ChatClient) -> None:
+    """Read user input in a separate thread to avoid blocking the pump loop."""
+    nickname = input("Enter your nickname: ")
+    client.set_nickname(nickname)
+    print("Type your messages (Ctrl+C to quit):")
+    
+    while client.running:
+        try:
+            msg = input()
+            if msg and client.running:
+                client.send_message(msg)
+        except (EOFError, KeyboardInterrupt):
+            client.running = False
+            break
+
+def main() -> None:
+    host = "127.0.0.1"
+    port = 5071
+    
+    if len(sys.argv) > 1:
+        host = sys.argv[1]
+    if len(sys.argv) > 2:
+        port = int(sys.argv[2])
+    
+    client = ChatClient(host, port)
+    
+    t = threading.Thread(target=input_thread, args=(client,), daemon=True)
+    t.start()
+    
+    try:
+        client.run()
+    except KeyboardInterrupt:
+        print("\nDisconnecting...")
+        client.running = False
+
+if __name__ == "__main__":
+    main()
+```
+</CodeGroup>
+
+## Low-Level Client API
+
+For advanced use cases, you can use the `Client` class directly instead of `ConnectionListener`:
+
+```python
+from repod.client import Client
+
+client = Client(host="localhost", port=5071)
+client.start_background()
+
+# Send messages
+client.send({"action": "ping"})
+
+# Poll for messages manually
+while not client._receive_queue.empty():
+    data = client._receive_queue.get_nowait()
+    print(f"Received: {data}")
+
+# Close when done
+client.close()
+```
+
+<Warning>
+  The low-level `Client` API requires you to manage the receive queue manually. Most applications should use `ConnectionListener` for its automatic message dispatching and cleaner API.
+</Warning>
+
+## Properties and Methods
+
+### Properties
+
+- **`connection`** - The underlying `Client` instance (or `None` if not connected)
+
+### Methods
+
+- **`connect(host, port)`** - Connect to a server
+- **`pump()`** - Process all pending messages
+- **`send(data)`** - Send a message to the server
+- **`network_received(data)`** - Fallback handler for unrecognized actions
+
+<Tip>
+  Check `client.connection` to determine if the client has attempted to connect. This doesn't guarantee the connection is active—use connection state handlers for that.
+</Tip>

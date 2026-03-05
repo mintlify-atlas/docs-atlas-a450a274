@@ -1,0 +1,211 @@
+---
+title: Latency Measurement Example
+description: Measure round-trip network latency with ping/pong messages
+---
+
+This example demonstrates how to measure network round-trip time (RTT) between client and server using timestamped ping/pong messages. It's a simple but essential tool for testing network performance.
+
+## What This Example Demonstrates
+
+- **RTT measurement**: Server timestamps outgoing pings and calculates round-trip time
+- **Ping/pong pattern**: Client immediately echoes server pings back
+- **Automatic termination**: Client disconnects after receiving 10 pings
+- **Minimal overhead**: Demonstrates the low latency of repod's networking
+- **Connection lifecycle**: Shows proper connection initialization and cleanup
+
+## Complete Code
+
+<CodeGroup>
+
+```python server.py
+"""Lag-time server -- measures round-trip ping latency."""
+
+from __future__ import annotations
+
+import sys
+import time
+
+from repod import Channel, Server
+
+
+class LagTimeChannel(Channel):
+    """Channel that measures round-trip latency via ping/pong."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.count: int = 0
+        self.times: list[float] = []
+
+    def on_close(self) -> None:
+        print(f"Client {self.addr} disconnected")
+
+    def Network_ping(self, data: dict) -> None:
+        rtt = time.time() - self.times[data["count"]]
+        print(f"Client {self.addr}: ping {data['count']} RTT was {rtt:.4f}s")
+        self.ping()
+
+    def ping(self) -> None:
+        """Send a timestamped ping to the client."""
+        self.times.append(time.time())
+        self.send({"action": "ping", "count": self.count})
+        self.count += 1
+
+
+class LagTimeServer(Server[LagTimeChannel]):
+    """Server that pings clients to measure latency."""
+
+    channel_class = LagTimeChannel
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 5071) -> None:
+        super().__init__(host, port)
+        print("LagTimeServer started")
+
+    def on_connect(self, channel: LagTimeChannel, addr: tuple[str, int]) -> None:
+        print(f"Client {addr} connected")
+        channel.ping()
+
+
+if __name__ == "__main__":
+    host = "127.0.0.1"
+    port = 5071
+
+    if len(sys.argv) > 1:
+        host = sys.argv[1]
+    if len(sys.argv) > 2:
+        port = int(sys.argv[2])
+
+    print(f"Server running on {host}:{port}")
+    LagTimeServer(host, port).launch()
+```
+
+```python client.py
+"""Lag-time client -- responds to pings and measures latency."""
+
+from __future__ import annotations
+
+import sys
+import time
+
+from repod import ConnectionListener
+
+
+class LagTimeClient(ConnectionListener):
+    """Client that responds to server pings."""
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 5071) -> None:
+        self.running = True
+        self.pings_received = 0
+        self.connect(host, port)
+        print("LagTimeClient started")
+
+    def run(self) -> None:
+        """Synchronous main loop."""
+        while self.running:
+            self.pump()
+            time.sleep(0.001)
+
+    def Network_connected(self, data: dict) -> None:
+        print("Connected to server!")
+
+    def Network_ping(self, data: dict) -> None:
+        print(f"Got ping #{data['count']}")
+        self.pings_received += 1
+
+        if self.pings_received >= 10:
+            print("Received 10 pings, closing connection...")
+            if self.connection is not None:
+                self.connection.close()
+        else:
+            self.send(data)
+
+    def Network_error(self, data: dict) -> None:
+        print(f"Error: {data.get('error', 'Unknown error')}")
+        self.running = False
+
+    def Network_disconnected(self, data: dict) -> None:
+        print("Disconnected from server")
+        self.running = False
+
+
+def main() -> None:
+    host = "127.0.0.1"
+    port = 5071
+
+    if len(sys.argv) > 1:
+        host = sys.argv[1]
+    if len(sys.argv) > 2:
+        port = int(sys.argv[2])
+
+    client = LagTimeClient(host, port)
+
+    try:
+        client.run()
+    except KeyboardInterrupt:
+        print("\nDisconnecting...")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+</CodeGroup>
+
+## How to Run
+
+<Steps>
+  <Step title="Start the server">
+    ```bash
+    python examples/lag_time/server.py
+    ```
+  </Step>
+
+  <Step title="Run the client">
+    In a separate terminal:
+    ```bash
+    python examples/lag_time/client.py
+    ```
+  </Step>
+
+  <Step title="Observe RTT measurements">
+    The server will print round-trip times for each ping:
+    ```
+    Client ('127.0.0.1', 54321) connected
+    Client ('127.0.0.1', 54321): ping 0 RTT was 0.0012s
+    Client ('127.0.0.1', 54321): ping 1 RTT was 0.0011s
+    ...
+    ```
+    
+    After 10 pings, the client will automatically disconnect.
+  </Step>
+</Steps>
+
+<Note>
+  On localhost, you should see RTT times under 1-2 milliseconds. Over a network, times will vary based on distance and network conditions.
+</Note>
+
+## How It Works
+
+1. **Server initiates**: When a client connects, the server immediately sends the first ping
+2. **Client echoes**: The client receives the ping and sends it back unchanged
+3. **Server measures**: The server compares the current time with the stored timestamp to calculate RTT
+4. **Repeat**: Server sends the next ping, continuing the cycle
+5. **Auto-disconnect**: After 10 pings, the client closes the connection
+
+## Key Takeaways
+
+- **Timestamp storage**: Server stores send times in a list indexed by ping count
+- **Echo pattern**: Client simply sends received data back without modification
+- **Per-channel state**: Each channel tracks its own ping count and timestamps
+- **Graceful shutdown**: Client properly closes the connection using `connection.close()`
+- **RTT calculation**: `time.time() - stored_time` gives accurate round-trip latency
+- **Network testing**: Useful for diagnosing connection quality and overhead
+
+## Extending This Example
+
+You could enhance this example to:
+
+- Calculate average, min, max, and standard deviation of RTT
+- Send pings at regular intervals instead of continuously
+- Measure one-way latency using synchronized clocks
+- Test with different message sizes to measure bandwidth
+- Plot RTT over time to visualize network stability

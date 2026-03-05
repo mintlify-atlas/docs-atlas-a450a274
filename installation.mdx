@@ -1,0 +1,201 @@
+---
+title: Installation
+description: Install repod and get your development environment ready
+---
+
+## Requirements
+
+repod requires **Python 3.12 or later**. It does not support older Python versions due to its use of modern features like PEP 695 generics and the removal of `asyncore` in Python 3.12.
+
+<Info>
+  You can check your Python version by running `python --version` or `python3 --version` in your terminal.
+</Info>
+
+## Install with pip
+
+The easiest way to install repod is via pip:
+
+```bash
+pip install repodnet
+```
+
+<Note>
+  The package name is `repodnet` on PyPI, but you import it as `repod` in your code:
+  
+  ```python
+  from repod import Server, Channel, ConnectionListener
+  ```
+</Note>
+
+## Install with uv
+
+If you're using [uv](https://docs.astral.sh/uv/) (a fast Python package manager), you can add repod to your project:
+
+```bash
+uv add repodnet
+```
+
+## Core dependencies
+
+repod has minimal dependencies and only requires one external package:
+
+<Card title="msgpack" icon="box" href="https://msgpack.org/">
+  Fast and efficient binary serialization library. Automatically installed with repod.
+  
+  **Version requirement:** `msgpack>=1.0.0`
+</Card>
+
+All other functionality is built on Python's standard library:
+
+- `asyncio` — Asynchronous I/O and event loops
+- `socket` — Low-level TCP networking
+- `threading` — Background thread support for synchronous game loops
+- `queue` — Thread-safe message queues
+
+## Optional dependencies
+
+Depending on what you're building, you may want to install additional packages:
+
+### For running examples
+
+The repod repository includes several example projects. If you want to run these locally, you'll need additional game framework dependencies:
+
+<Tabs>
+  <Tab title="Chat example">
+    No additional dependencies required — uses standard input/output.
+  </Tab>
+  
+  <Tab title="Whiteboard example">
+    Requires pygame-ce:
+    
+    ```bash
+    pip install pygame-ce>=2.5.7
+    ```
+  </Tab>
+  
+  <Tab title="Tag game example">
+    Requires raylib:
+    
+    ```bash
+    pip install raylib>=5.0.0.0
+    ```
+  </Tab>
+  
+  <Tab title="Latency measurement">
+    No additional dependencies required.
+  </Tab>
+</Tabs>
+
+### For development
+
+If you're contributing to repod or want to run tests and linting:
+
+```bash
+uv sync --dev
+```
+
+This installs development dependencies:
+
+- `pytest>=8.0` — Testing framework
+- `ruff>=0.15.4` — Linting and formatting
+- `ty>=0.0.20` — Type checker
+
+## Verify installation
+
+After installation, verify that repod is correctly installed:
+
+<Steps>
+  <Step title="Import the library">
+    Open a Python REPL and try importing repod:
+    
+    ```bash
+    python3
+    ```
+    
+    ```python
+    >>> import repod
+    >>> repod.__all__
+    ['DEFAULT_HOST', 'DEFAULT_PORT', 'Channel', 'Client', 'ConnectionListener', 'Server', 'configure_logging', 'decode', 'encode', 'read_message']
+    ```
+  </Step>
+  
+  <Step title="Check the version">
+    You can verify the installed version by checking the package metadata:
+    
+    ```bash
+    pip show repodnet
+    ```
+    
+    This should display information about the installed package, including the version number.
+  </Step>
+  
+  <Step title="Run a quick test">
+    Try creating a simple server instance:
+    
+    ```python
+    >>> from repod import Server, Channel
+    >>> 
+    >>> class TestChannel(Channel):
+    ...     pass
+    ... 
+    >>> class TestServer(Server):
+    ...     channel_class = TestChannel
+    ... 
+    >>> server = TestServer(host="127.0.0.1", port=5071)
+    >>> print(f"Server created at {server.address}")
+    Server created at ('127.0.0.1', 5071)
+    ```
+  </Step>
+</Steps>
+
+<Check>
+  If all the above steps work without errors, repod is correctly installed and ready to use!
+</Check>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="ImportError: No module named 'repod'">
+    Make sure you installed `repodnet` (not `repod`) via pip:
+    
+    ```bash
+    pip install repodnet
+    ```
+    
+    Also verify you're using the correct Python environment. If you're using a virtual environment, make sure it's activated.
+  </Accordion>
+  
+  <Accordion title="Python version too old">
+    repod requires Python 3.12 or later. If you see errors about missing features or incompatible syntax, check your Python version:
+    
+    ```bash
+    python3 --version
+    ```
+    
+    If you have an older version, you'll need to upgrade Python before installing repod.
+  </Accordion>
+  
+  <Accordion title="msgpack installation fails">
+    msgpack is a compiled extension and requires a C compiler. On most systems it installs without issues, but if you encounter problems:
+    
+    **Linux:** Install build essentials:
+    ```bash
+    sudo apt-get install build-essential python3-dev
+    ```
+    
+    **macOS:** Install Xcode command line tools:
+    ```bash
+    xcode-select --install
+    ```
+    
+    **Windows:** Install Visual Studio Build Tools from Microsoft.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+Now that repod is installed, you're ready to build your first multiplayer game:
+
+<Card title="Quick Start" icon="rocket" href="/quickstart">
+  Build a complete client-server application in minutes
+</Card>

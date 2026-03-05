@@ -1,0 +1,124 @@
+---
+title: Introduction
+description: Modern async networking library for multiplayer games in Python
+---
+
+## What is repod?
+
+repod is a networking library designed to make it easy to write multiplayer games in Python. It uses `asyncio` and `msgpack` to asynchronously serialize network events and arbitrary data structures, and delivers them to your high-level classes through simple callback methods.
+
+<Info>
+  repod is a modernized fork of [PodSixNet](https://github.com/chr15m/PodSixNet). Same ideas — channels, action-based message dispatch, synchronous pump loops — but rebuilt from scratch for Python 3.12+ with async I/O, binary msgpack serialization, and full type annotations.
+</Info>
+
+## Why use repod?
+
+Repod simplifies multiplayer game networking by abstracting away the complexity of socket programming:
+
+<CardGroup cols={2}>
+  <Card title="Simple API" icon="code">
+    No manual buffer handling or socket polling. Just call `client.pump()` once per game loop and implement `Network_*` callbacks.
+  </Card>
+  <Card title="Framework Agnostic" icon="puzzle-piece">
+    Works with any game framework that has a main loop: pygame, raylib, arcade, pyglet, and more.
+  </Card>
+  <Card title="Modern Python" icon="snake">
+    Built for Python 3.12+ with full type annotations, asyncio, and modern tooling support.
+  </Card>
+  <Card title="Battle-Tested Pattern" icon="shield">
+    Based on PodSixNet's proven architecture, used in countless multiplayer games.
+  </Card>
+</CardGroup>
+
+## Key features
+
+- **Asyncio-based networking with msgpack serialization** — Fast, efficient binary protocol with length-prefix framing
+- **Simple action-based message dispatch with Network_* callbacks** — No complex event systems, just define methods
+- **Background thread support for synchronous game loops** — Keep your main game loop simple and synchronous
+- **Type-safe with full Python 3.12+ annotations** — Get autocomplete and type checking in your IDE
+- **Drop-in replacement for PodSixNet** — Migrate existing projects with minimal changes
+
+## How it works
+
+Each class within your game client which wants to receive network events subclasses `ConnectionListener` and implements `Network_*` methods to catch specific events from the server. You don't have to wait for buffers to fill, or check sockets for waiting data or anything like that — just call `client.pump()` once per game loop and the library handles everything else, passing off events to your listener.
+
+```python
+class MyClient(ConnectionListener):
+    
+    def Network_connected(self, data: dict) -> None:
+        print("connected to the server")
+    
+    def Network_myaction(self, data: dict) -> None:
+        print("myaction:", data)
+
+client = MyClient()
+client.connect("localhost", 5071)
+
+while True:
+    client.pump()
+    time.sleep(0.01)
+```
+
+Sending data back to the server is just as easy with `client.send(mydata)`. On the server side, events are propagated to `Network_*` callbacks on your `Channel` subclass, and data is sent back to clients with `channel.send(mydata)`.
+
+## Comparison with PodSixNet
+
+PodSixNet was great for its time, but it has some significant limitations:
+
+<AccordionGroup>
+  <Accordion title="Built on deprecated asyncore">
+    PodSixNet is built on `asyncore`, which was **removed in Python 3.12**. This makes it incompatible with modern Python versions.
+  </Accordion>
+  
+  <Accordion title="Fragile serialization">
+    PodSixNet uses `rencode` / custom delimiter-based framing (`\0---\0`), which is fragile with binary data and can break with certain payload patterns.
+  </Accordion>
+  
+  <Accordion title="No type annotations">
+    PodSixNet has no type annotations, which means no autocomplete, no type checking, and no modern IDE support.
+  </Accordion>
+  
+  <Accordion title="No longer maintained">
+    PodSixNet is no longer actively maintained ([chr15m/PodSixNet#46](https://github.com/chr15m/PodSixNet/issues/46)), leaving users without bug fixes or improvements.
+  </Accordion>
+</AccordionGroup>
+
+repod keeps the same simple API philosophy but replaces the internals:
+
+| Feature | PodSixNet | repod |
+|---------|-----------|-------|
+| Python version | 2.x - 3.11 | 3.12+ |
+| I/O layer | asyncore (deprecated) | asyncio |
+| Serialization | rencode + delimiter framing | msgpack + length-prefix |
+| Type annotations | None | Full PEP 695 generics |
+| Maintenance | Inactive | Active |
+
+## When to use repod
+
+<Check>
+  **Perfect for:**
+  - Turn-based multiplayer games
+  - Real-time action games with moderate player counts
+  - Co-op games and shared experiences
+  - Game lobbies and matchmaking systems
+  - Python-based game clients connecting to Python servers
+</Check>
+
+<Warning>
+  **Not ideal for:**
+  - Massive multiplayer online games (MMOs) with thousands of concurrent players
+  - Ultra-low latency competitive games (consider UDP-based solutions)
+  - Cross-language client/server setups (repod is Python-only)
+  - Games requiring advanced networking features like NAT punchthrough
+</Warning>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install repod with pip or uv and verify your setup
+  </Card>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Build your first client-server game in minutes
+  </Card>
+</CardGroup>

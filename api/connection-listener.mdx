@@ -1,0 +1,217 @@
+---
+title: ConnectionListener
+description: High-level mixin for handling server messages synchronously with callback methods
+---
+
+The `ConnectionListener` class is a high-level mixin for handling server messages synchronously. Subclass it and define `Network_{action}` methods to handle incoming messages. Call `pump()` once per frame in your game loop to process queued network events.
+
+## Methods
+
+### connect
+
+```python
+def connect(host: str = "127.0.0.1", port: int = 5071) -> None
+```
+
+Connect to a remote server. Creates a [Client](/api/client) instance and starts its background network thread.
+
+<ParamField path="host" type="str" default="127.0.0.1">
+  Server hostname or IP address.
+</ParamField>
+
+<ParamField path="port" type="int" default="5071">
+  Server port number.
+</ParamField>
+
+```python
+from repod import ConnectionListener
+
+class GameClient(ConnectionListener):
+    pass
+
+client = GameClient()
+client.connect("localhost", 5071)
+```
+
+### pump
+
+```python
+def pump() -> None
+```
+
+Process all pending network messages. Call this once per frame in your game loop. Each queued message is dispatched to the matching `Network_{action}` method, or to `network_received()` as a fallback.
+
+```python
+import time
+
+while True:
+    client.pump()  # Process all queued messages
+    time.sleep(0.01)
+```
+
+### send
+
+```python
+def send(data: dict[str, Any]) -> int
+```
+
+Send a message to the server.
+
+<ParamField path="data" type="dict[str, Any]" required>
+  Message dictionary. Should contain an `action` key.
+</ParamField>
+
+<ResponseField name="return" type="int">
+  Number of bytes queued, or `0` if not connected.
+</ResponseField>
+
+```python
+client.send({"action": "chat", "text": "Hello!"})
+client.send({"action": "move", "x": 10, "y": 20})
+```
+
+### network_received
+
+```python
+def network_received(data: dict[str, Any]) -> None
+```
+
+Fallback handler for unrecognized message actions. Override to handle messages that don't match any `Network_{action}` method.
+
+<ParamField path="data" type="dict[str, Any]" required>
+  The received message dictionary.
+</ParamField>
+
+```python
+class GameClient(ConnectionListener):
+    def network_received(self, data: dict) -> None:
+        print(f"Unhandled message: {data}")
+```
+
+## Properties
+
+<ResponseField name="connection" type="Client | None">
+  The underlying [Client](/api/client) instance, or `None` if not connected.
+</ResponseField>
+
+```python
+if client.connection:
+    print(f"Connected to {client.connection.address}")
+```
+
+## Defining Network Callbacks
+
+Define methods named `Network_{action}` to handle specific message types. The method name must match the `action` field in the received message.
+
+```python
+from repod import ConnectionListener
+import time
+
+class GameClient(ConnectionListener):
+    
+    def Network_connected(self, data: dict) -> None:
+        """Called when connection is established."""
+        print("Connected to server!")
+        self.send({"action": "login", "username": "alice"})
+    
+    def Network_chat(self, data: dict) -> None:
+        """Handle chat messages."""
+        print(f"{data['name']}: {data['text']}")
+    
+    def Network_player_joined(self, data: dict) -> None:
+        """Handle player join events."""
+        print(f"Player {data['name']} joined the game")
+    
+    def Network_error(self, data: dict) -> None:
+        """Handle error messages."""
+        print(f"Error: {data['error']}")
+
+client = GameClient()
+client.connect("localhost", 5071)
+
+while True:
+    client.pump()
+    time.sleep(0.01)
+```
+
+## Built-in Actions
+
+The client automatically sends the following actions:
+
+- `connected` — Connection established successfully
+- `socketConnect` — Socket connection completed (sent after `connected`)
+- `disconnected` — Connection closed
+- `error` — Connection error occurred (contains `error` field with error message)
+
+```python
+class GameClient(ConnectionListener):
+    
+    def Network_connected(self, data: dict) -> None:
+        print("Connection established")
+    
+    def Network_disconnected(self, data: dict) -> None:
+        print("Connection closed")
+    
+    def Network_error(self, data: dict) -> None:
+        print(f"Connection error: {data.get('error', 'Unknown')}")
+```
+
+## Full Example
+
+```python
+import time
+from repod import ConnectionListener
+
+class GameClient(ConnectionListener):
+    
+    def __init__(self):
+        self.logged_in = False
+    
+    def Network_connected(self, data: dict) -> None:
+        print("Connected to server!")
+        self.send({"action": "login", "username": "alice"})
+    
+    def Network_login_success(self, data: dict) -> None:
+        print(f"Logged in as {data['username']}")
+        self.logged_in = True
+    
+    def Network_chat(self, data: dict) -> None:
+        print(f"[CHAT] {data['name']}: {data['text']}")
+    
+    def Network_game_state(self, data: dict) -> None:
+        print(f"Players online: {len(data['players'])}")
+    
+    def Network_disconnected(self, data: dict) -> None:
+        print("Disconnected from server")
+        self.logged_in = False
+    
+    def network_received(self, data: dict) -> None:
+        # Catch-all for unhandled messages
+        print(f"Unhandled message: {data}")
+
+# Create and connect
+client = GameClient()
+client.connect("localhost", 5071)
+
+# Main game loop
+try:
+    while True:
+        client.pump()  # Process network messages
+        
+        # Your game logic here
+        if client.logged_in:
+            # Send periodic messages
+            pass
+        
+        time.sleep(0.01)  # ~100 FPS
+except KeyboardInterrupt:
+    print("Shutting down...")
+```
+
+## Notes
+
+- Call `pump()` regularly (e.g., once per frame) to process incoming messages.
+- All `Network_*` callbacks are executed synchronously in your main thread.
+- Messages are processed in the order they were received.
+- If no matching `Network_{action}` method exists, `network_received()` is called instead.
+- The underlying [Client](/api/client) is accessible via the `connection` property.

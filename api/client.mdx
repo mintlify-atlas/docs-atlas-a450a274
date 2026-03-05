@@ -1,0 +1,110 @@
+---
+title: Client
+description: Low-level TCP client with background asyncio event loop for connecting to repod servers
+---
+
+The `Client` class provides a low-level TCP client that runs asynchronous read/write loops in a daemon thread. It exposes thread-safe methods for sending messages and closing connections from the main thread.
+
+## Constructor
+
+<ParamField path="host" type="str" default="127.0.0.1">
+  Server hostname or IP address.
+</ParamField>
+
+<ParamField path="port" type="int" default="5071">
+  Server port number.
+</ParamField>
+
+```python
+from repod import Client
+
+client = Client(host="localhost", port=5071)
+client.start_background()
+```
+
+## Properties
+
+<ResponseField name="address" type="tuple[str, int]">
+  `(host, port)` tuple for the remote server.
+</ResponseField>
+
+```python
+host, port = client.address
+print(f"Connecting to {host}:{port}")
+```
+
+## Methods
+
+### start_background
+
+```python
+def start_background() -> None
+```
+
+Start the network event loop in a daemon thread. This must be called before the client can send or receive messages.
+
+```python
+client = Client("localhost", 5071)
+client.start_background()
+```
+
+### send
+
+```python
+def send(data: dict[str, Any]) -> int
+```
+
+Queue a message for sending to the server. Thread-safe — call from your main game loop.
+
+<ParamField path="data" type="dict[str, Any]" required>
+  Message dictionary. Should contain an `action` key.
+</ParamField>
+
+<ResponseField name="return" type="int">
+  Number of bytes queued, or `0` if disconnected.
+</ResponseField>
+
+```python
+bytes_sent = client.send({"action": "move", "x": 10, "y": 20})
+if bytes_sent == 0:
+    print("Client is disconnected")
+```
+
+### close
+
+```python
+def close() -> None
+```
+
+Close the connection. Safe to call from any thread. Subsequent calls are no-ops.
+
+```python
+client.close()
+```
+
+## Full Example
+
+```python
+import time
+from repod import Client
+
+client = Client("localhost", 5071)
+client.start_background()
+
+# Send messages
+client.send({"action": "login", "username": "alice"})
+client.send({"action": "chat", "text": "Hello world!"})
+
+# Keep the main thread alive
+time.sleep(1.0)
+
+# Close when done
+client.close()
+```
+
+## Notes
+
+- The client runs an asyncio event loop in a background daemon thread, allowing the main application loop to remain fully synchronous.
+- Messages are queued and sent asynchronously via the background thread.
+- The `send()` method is thread-safe and can be called from any thread.
+- For most use cases, consider using [ConnectionListener](/api/connection-listener) instead, which provides a higher-level interface.

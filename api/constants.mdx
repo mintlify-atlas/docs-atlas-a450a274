@@ -1,0 +1,90 @@
+---
+title: "Constants"
+description: "Network configuration constants used throughout repod"
+---
+
+Default values used throughout the repod networking library.
+
+## Network Configuration
+
+### DEFAULT_HOST
+
+```python
+DEFAULT_HOST: Final[str] = "127.0.0.1"
+```
+
+Default hostname for connections (localhost).
+
+This constant defines the default IP address used when establishing network connections. It points to the loopback interface, ensuring connections stay local to the machine.
+
+**Type:** `str`  
+**Value:** `"127.0.0.1"`
+
+### DEFAULT_PORT
+
+```python
+DEFAULT_PORT: Final[int] = 5071
+```
+
+Default port for connections.
+
+This constant defines the default port number used for repod server and client connections.
+
+**Type:** `int`  
+**Value:** `5071`
+
+## Protocol Configuration
+
+### HEADER_SIZE
+
+```python
+HEADER_SIZE: Final[int] = 4
+```
+
+Size in bytes of the message length header.
+
+This defines the number of bytes used for the length prefix in the message framing protocol. A 4-byte header allows messages up to 4GB in size (2³² bytes).
+
+**Type:** `int`  
+**Value:** `4`
+
+### HEADER_FORMAT
+
+```python
+HEADER_FORMAT: Final[str] = ">I"
+```
+
+Struct format for the header (big-endian unsigned int).
+
+This format string is used with Python's `struct` module to pack and unpack the message length header. The format specifies:
+- `>`: Big-endian byte order (network byte order)
+- `I`: Unsigned integer (4 bytes)
+
+**Type:** `str`  
+**Value:** `">I"`
+
+### READ_BUFFER_SIZE
+
+```python
+READ_BUFFER_SIZE: Final[int] = 4096
+```
+
+Buffer size in bytes for reading from sockets.
+
+This defines the default chunk size when reading data from network sockets. A 4KB buffer provides a good balance between memory usage and performance for typical message sizes.
+
+**Type:** `int`  
+**Value:** `4096`
+
+## Usage Example
+
+```python
+from repod.constants import DEFAULT_HOST, DEFAULT_PORT
+
+# Use default connection settings
+host = DEFAULT_HOST  # "127.0.0.1"
+port = DEFAULT_PORT  # 5071
+
+print(f"Connecting to {host}:{port}")
+# Connecting to 127.0.0.1:5071
+```

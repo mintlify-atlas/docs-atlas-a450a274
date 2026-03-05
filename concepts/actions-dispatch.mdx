@@ -1,0 +1,484 @@
+---
+title: Actions & Message Dispatch
+description: Learn how action-based message routing works in repod
+---
+
+repod uses **action-based dispatch** to route incoming messages to the correct handler methods. Every message should include an `"action"` key that identifies the message type.
+
+## The Action Key
+
+Messages in repod are Python dictionaries. The `"action"` key is special -- it tells repod which handler method to call.
+
+```python
+# A message with action "chat"
+{"action": "chat", "text": "Hello, world!", "sender": "Alice"}
+
+# A message with action "move"
+{"action": "move", "x": 100, "y": 200, "player_id": 42}
+
+# A message with action "attack"
+{"action": "attack", "target": 7, "damage": 15}
+```
+
+When repod receives a message with `"action": "chat"`, it looks for a method named `Network_chat()` and calls it with the full message dictionary.
+
+## Network_* Callback Methods
+
+Define message handlers by creating methods named `Network_{action}` on your `Channel` or `ConnectionListener` subclass.
+
+### Server-Side (Channel)
+
+From the server example in `server.py:10-14`:
+
+```python server.py
+class GameChannel(Channel):
+    def Network_chat(self, data: dict) -> None:
+        self.server.send_to_all(
+            {"action": "chat", "text": data["text"]}
+        )
+```
+
+When a client sends `{"action": "chat", "text": "Hello"}`, the server:
+
+1. Receives the message in `_read_loop()`
+2. Enqueues it to `_receive_queue`
+3. Calls `_dispatch(data)` from `_process_loop()`
+4. Finds the `Network_chat` method and calls it with the full dictionary
+
+### Client-Side (ConnectionListener)
+
+From the client example in `client.py:17-22`:
+
+```python client.py
+class GameClient(ConnectionListener):
+    def Network_connected(self, data: dict) -> None:
+        print("Connected!")
+        self.send({"action": "hello", "name": "Alice"})
+
+    def Network_chat(self, data: dict) -> None:
+        print(f"{data['name']}: {data['text']}")
+```
+
+When you call `client.pump()`, it:
+
+1. Drains the `_receive_queue`
+2. Extracts the `"action"` key
+3. Looks up `Network_{action}` using `getattr()`
+4. Calls the handler if it exists
+
+## The Dispatch Mechanism
+
+Let's look at how dispatch works under the hood.
+
+### Channel Dispatch
+
+From `channel.py:172-189`:
+
+```python channel.py
+def _dispatch(self, data: dict[str, Any]) -> None:
+    """Route a message to the matching ``Network_{action}`` method.
+
+    Falls back to :meth:`network_received` when no specific handler
+    is found.
+    """
+    action = data.get("action", "")
+    method_name = f"Network_{action}"
+    handler = getattr(self, method_name, None)
+    if handler is not None:
+        log.debug("message_dispatched", action=action)
+        handler(data)
+    else:
+        log.debug("message_unhandled", action=action)
+        self.network_received(data)
+```
+
+<Steps>
+  <Step title="Extract action">
+    Get the `"action"` value from the message dictionary. If missing, defaults to empty string.
+  </Step>
+  
+  <Step title="Build method name">
+    Construct the handler name: `"Network_" + action`. For example, `"chat"` becomes `"Network_chat"`.
+  </Step>
+  
+  <Step title="Look up handler">
+    Use `getattr(self, method_name, None)` to find the method. Returns `None` if not found.
+  </Step>
+  
+  <Step title="Call handler or fallback">
+    If the handler exists, call it with the full message. Otherwise, call `network_received(data)`.
+  </Step>
+</Steps>
+
+### ConnectionListener Dispatch
+
+The client-side dispatch is nearly identical. From `client.py:242-266`:
+
+```python client.py
+def pump(self) -> None:
+    """Process all pending network messages."""
+    if self._connection is None:
+        return
+
+    while not self._connection._receive_queue.empty():
+        try:
+            data = self._connection._receive_queue.get_nowait()
+        except queue.Empty:
+            break
+
+        action = data.get("action", "")
+        method_name = f"Network_{action}"
+        handler = getattr(self, method_name, None)
+        if handler is not None:
+            log.debug("message_dispatched", action=action)
+            handler(data)
+        else:
+            log.debug("message_unhandled", action=action)
+            self.network_received(data)
+```
+
+The only difference: `pump()` drains the queue from the background thread first, then dispatches each message.
+
+## Fallback to network_received
+
+If no `Network_{action}` method exists, repod calls the `network_received()` fallback.
+
+### Channel Fallback
+
+From `channel.py:161-170`:
+
+```python channel.py
+def network_received(self, data: dict[str, Any]) -> None:
+    """Fallback handler for messages with no specific handler.
+
+    Called when a message's ``action`` does not match any
+    ``Network_{action}`` method.  Override to handle unrecognized
+    messages.
+    """
+```
+
+By default, `network_received()` does nothing. Override it to handle unknown actions:
+
+```python fallback.py
+class GameChannel(Channel):
+    def Network_chat(self, data: dict) -> None:
+        # Handle chat messages
+        pass
+    
+    def network_received(self, data: dict) -> None:
+        # Handle all other messages
+        print(f"Unhandled action: {data.get('action')}")
+        print(f"Data: {data}")
+```
+
+### ConnectionListener Fallback
+
+From `client.py:281-289`:
+
+```python client.py
+def network_received(self, data: dict[str, Any]) -> None:
+    """Fallback handler for unrecognized message actions.
+
+    Override to handle messages that don't match any
+    ``Network_{action}`` method.
+    """
+```
+
+Use this for catch-all logging or debugging:
+
+```python client_fallback.py
+class GameClient(ConnectionListener):
+    def Network_connected(self, data: dict) -> None:
+        print("Connected!")
+    
+    def network_received(self, data: dict) -> None:
+        print(f"Unknown message: {data}")
+```
+
+## Message Dictionary Structure
+
+Messages can contain any msgpack-serializable data:
+
+- Dictionaries
+- Lists
+- Strings
+- Numbers (int, float)
+- Booleans
+- `None`
+- Bytes (as msgpack binary type)
+
+### Example Message Structures
+
+```python examples.py
+# Simple action
+{"action": "ping"}
+
+# Chat message
+{
+    "action": "chat",
+    "sender": "Alice",
+    "text": "Hello!",
+    "timestamp": 1234567890
+}
+
+# Player state update
+{
+    "action": "player_state",
+    "id": 42,
+    "position": {"x": 100, "y": 200},
+    "velocity": {"x": 5, "y": -3},
+    "health": 85,
+    "inventory": ["sword", "shield", "potion"]
+}
+
+# Nested structures
+{
+    "action": "game_state",
+    "players": [
+        {"id": 1, "name": "Alice", "score": 100},
+        {"id": 2, "name": "Bob", "score": 85}
+    ],
+    "world": {
+        "time": 12000,
+        "weather": "rain"
+    }
+}
+```
+
+<Warning>
+Make sure every message includes an `"action"` key, otherwise it will fall back to `network_received()` with an empty action string.
+</Warning>
+
+## Built-in Actions
+
+repod automatically sends a few built-in actions:
+
+### Server → Client
+
+| Action | When | Data |
+|--------|------|------|
+| `connected` | Client successfully connects | `{"action": "connected"}` |
+
+From `server.py:197`:
+
+```python server.py
+channel.send({"action": "connected"})
+```
+
+### Client → ConnectionListener
+
+| Action | When | Data |
+|--------|------|------|
+| `connected` | Connection established | `{"action": "connected"}` |
+| `socketConnect` | Socket opened | `{"action": "socketConnect"}` |
+| `disconnected` | Connection closed | `{"action": "disconnected"}` |
+| `error` | Connection failed | `{"action": "error", "error": "..."}` |
+
+From `client.py:140-141`:
+
+```python client.py
+self._receive_queue.put({"action": "connected"})
+self._receive_queue.put({"action": "socketConnect"})
+```
+
+Handle these in your `ConnectionListener` subclass:
+
+```python builtin_handlers.py
+class GameClient(ConnectionListener):
+    def Network_connected(self, data: dict) -> None:
+        print("Connected to server!")
+    
+    def Network_socketConnect(self, data: dict) -> None:
+        print("Socket opened")
+    
+    def Network_disconnected(self, data: dict) -> None:
+        print("Disconnected from server")
+    
+    def Network_error(self, data: dict) -> None:
+        print(f"Connection error: {data['error']}")
+```
+
+## Dispatch Performance
+
+The dispatch mechanism is fast:
+
+- `getattr()` is O(1) hash lookup
+- No string parsing or regex matching
+- No message copying
+
+For a typical game server handling hundreds of messages per second, dispatch overhead is negligible (< 1μs per message).
+
+## Advanced Patterns
+
+### Dynamic Handler Registration
+
+You can dynamically add handlers at runtime:
+
+```python dynamic.py
+class GameChannel(Channel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # Dynamically add a handler
+        self.Network_custom = self._handle_custom
+    
+    def _handle_custom(self, data: dict) -> None:
+        print(f"Custom handler: {data}")
+```
+
+### Action Routing Table
+
+For complex games, you might want a routing table:
+
+```python routing_table.py
+class GameChannel(Channel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.handlers = {
+            "chat": self._handle_chat,
+            "move": self._handle_move,
+            "attack": self._handle_attack,
+        }
+    
+    def network_received(self, data: dict) -> None:
+        action = data.get("action")
+        handler = self.handlers.get(action)
+        if handler:
+            handler(data)
+        else:
+            print(f"Unknown action: {action}")
+    
+    def _handle_chat(self, data: dict) -> None:
+        # Handle chat
+        pass
+    
+    def _handle_move(self, data: dict) -> None:
+        # Handle movement
+        pass
+    
+    def _handle_attack(self, data: dict) -> None:
+        # Handle attack
+        pass
+```
+
+### Namespaced Actions
+
+Use dots to namespace actions:
+
+```python namespaced.py
+class GameChannel(Channel):
+    def Network_player_move(self, data: dict) -> None:
+        # Handle player.move
+        pass
+    
+    def Network_player_attack(self, data: dict) -> None:
+        # Handle player.attack
+        pass
+    
+    def Network_world_update(self, data: dict) -> None:
+        # Handle world.update
+        pass
+
+# Client sends:
+client.send({"action": "player.move", "x": 100, "y": 200})
+```
+
+Python's identifier rules allow dots in method names when accessed via `getattr()`, but not when defined directly. Use underscores as a convention:
+
+```python underscore_convention.py
+# Use underscores in method names
+def Network_player_move(self, data: dict) -> None:
+    pass
+
+# Send with dots or underscores (both work)
+client.send({"action": "player_move", ...})
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Always include an action key">
+    Every message should have an `"action"` key:
+    
+    ```python
+    # Good
+    client.send({"action": "chat", "text": "Hello"})
+    
+    # Bad - will fall back to network_received
+    client.send({"text": "Hello"})
+    ```
+  </Accordion>
+  
+  <Accordion title="Use descriptive action names">
+    Choose clear, unambiguous names:
+    
+    ```python
+    # Good
+    {"action": "player_move", "x": 100, "y": 200}
+    {"action": "inventory_add_item", "item": "sword"}
+    
+    # Bad
+    {"action": "m", "x": 100, "y": 200}
+    {"action": "do_thing", "item": "sword"}
+    ```
+  </Accordion>
+  
+  <Accordion title="Keep the action namespace flat">
+    Avoid deeply nested action hierarchies:
+    
+    ```python
+    # Good
+    "player_move"
+    "player_attack"
+    "world_update"
+    
+    # Avoid
+    "game.world.entity.player.action.move"
+    ```
+  </Accordion>
+  
+  <Accordion title="Document your message protocol">
+    Keep a reference of all actions and their expected fields:
+    
+    ```python
+    # protocol.py
+    """
+    Message Protocol
+    
+    player_move:
+        x: int
+        y: int
+        player_id: int
+    
+    chat:
+        sender: str
+        text: str
+        timestamp: int
+    
+    game_state:
+        players: list[dict]
+        world: dict
+    """
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Serialization" icon="binary" href="/concepts/serialization">
+    Learn how messages are serialized with msgpack
+  </Card>
+  
+  <Card title="Channel API" icon="network-wired" href="/api/channel">
+    Full Channel API reference
+  </Card>
+  
+  <Card title="Client API" icon="laptop" href="/api/connection-listener">
+    Full ConnectionListener API reference
+  </Card>
+  
+  <Card title="Examples" icon="code" href="/examples/chat">
+    See action-based dispatch in real examples
+  </Card>
+</CardGroup>

@@ -1,0 +1,255 @@
+---
+title: Chat Example
+description: Build a real-time multi-user chat application with repod
+---
+
+This example demonstrates how to build a simple multi-user chat server and client using repod. Users can set nicknames, send messages, and see who's currently connected.
+
+## What This Example Demonstrates
+
+- Basic server/client communication patterns
+- Broadcasting messages to all connected clients
+- Managing player lists and connection events
+- Using `Network_` methods to handle different message types
+- Running a client pump loop with threading for input handling
+
+## Complete Code
+
+<CodeGroup>
+
+```python server.py
+"""Chat server example using repod."""
+
+from __future__ import annotations
+
+import sys
+
+from repod import Channel, Server
+
+
+class ClientChannel(Channel["ChatServer"]):
+    """Server-side channel for a connected chat client."""
+
+    nickname: str
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.nickname = "Anonymous"
+
+    def on_close(self) -> None:
+        self.server.del_player(self)
+
+    def Network_message(self, data: dict) -> None:
+        self.server.broadcast(
+            {
+                "action": "message",
+                "text": data["text"],
+                "nickname": self.nickname,
+            }
+        )
+
+    def Network_nickname(self, data: dict) -> None:
+        self.nickname = data["nickname"]
+        self.server.send_players()
+
+
+class ChatServer(Server[ClientChannel]):
+    """Chat server that manages connected clients."""
+
+    channel_class = ClientChannel
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 5071) -> None:
+        super().__init__(host, port)
+        self.players: dict[ClientChannel, str] = {}
+
+    def on_connect(self, channel: ClientChannel, addr: tuple[str, int]) -> None:
+        self._add_player(channel)
+
+    def _add_player(self, player: ClientChannel) -> None:
+        self.players[player] = player.nickname
+        print(f"Player connected: {player.addr}")
+        self.broadcast(
+            {
+                "action": "system",
+                "text": f"{player.nickname} joined the chat",
+            }
+        )
+        self.send_players()
+
+    def del_player(self, player: ClientChannel) -> None:
+        """Remove a player and notify others."""
+        if player in self.players:
+            nickname = self.players.pop(player)
+            print(f"Player disconnected: {player.addr}")
+            self.broadcast(
+                {
+                    "action": "system",
+                    "text": f"{nickname} left the chat",
+                }
+            )
+            self.send_players()
+
+    def send_players(self) -> None:
+        """Broadcast the current player list."""
+        self.broadcast(
+            {
+                "action": "players",
+                "list": [p.nickname for p in self.players],
+            }
+        )
+
+    def broadcast(self, data: dict) -> None:
+        """Send a message to all connected players."""
+        for player in self.players:
+            player.send(data)
+
+
+if __name__ == "__main__":
+    host = "127.0.0.1"
+    port = 5071
+
+    if len(sys.argv) > 1:
+        host = sys.argv[1]
+    if len(sys.argv) > 2:
+        port = int(sys.argv[2])
+
+    print(f"Chat server running on {host}:{port}")
+    print("Press Ctrl+C to stop")
+    ChatServer(host, port).launch()
+```
+
+```python client.py
+"""Chat client example using repod."""
+
+from __future__ import annotations
+
+import sys
+import threading
+import time
+
+from repod import ConnectionListener
+
+
+class ChatClient(ConnectionListener):
+    """Chat client that connects to a chat server."""
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 5071) -> None:
+        self.running = True
+        self.connect(host, port)
+        print("Chat client started")
+
+    def set_nickname(self, nickname: str) -> None:
+        """Send the chosen nickname to the server."""
+        self.send({"action": "nickname", "nickname": nickname})
+
+    def send_message(self, text: str) -> None:
+        """Send a chat message to the server."""
+        self.send({"action": "message", "text": text})
+
+    def run(self) -> None:
+        """Synchronous main loop (ideal for game loops like pygame)."""
+        while self.running:
+            self.pump()
+            time.sleep(0.01)
+
+    def Network_connected(self, data: dict) -> None:
+        print("Connected to server!")
+
+    def Network_system(self, data: dict) -> None:
+        print(f"SYSTEM: {data['text']}")
+
+    def Network_message(self, data: dict) -> None:
+        print(f"{data['nickname']}: {data['text']}")
+
+    def Network_players(self, data: dict) -> None:
+        print(f"Players: {', '.join(data['list'])}")
+
+    def Network_error(self, data: dict) -> None:
+        print(f"Error: {data.get('error', 'Unknown error')}")
+        self.running = False
+
+    def Network_disconnected(self, data: dict) -> None:
+        print("Disconnected from server")
+        self.running = False
+
+
+def input_thread(client: ChatClient) -> None:
+    """Read user input in a separate thread to avoid blocking the pump loop."""
+    nickname = input("Enter your nickname: ")
+    client.set_nickname(nickname)
+    print("Type your messages (Ctrl+C to quit):")
+
+    while client.running:
+        try:
+            msg = input()
+            if msg and client.running:
+                client.send_message(msg)
+        except (EOFError, KeyboardInterrupt):
+            client.running = False
+            break
+
+
+def main() -> None:
+    host = "127.0.0.1"
+    port = 5071
+
+    if len(sys.argv) > 1:
+        host = sys.argv[1]
+    if len(sys.argv) > 2:
+        port = int(sys.argv[2])
+
+    client = ChatClient(host, port)
+
+    t = threading.Thread(target=input_thread, args=(client,), daemon=True)
+    t.start()
+
+    try:
+        client.run()
+    except KeyboardInterrupt:
+        print("\nDisconnecting...")
+        client.running = False
+
+
+if __name__ == "__main__":
+    main()
+```
+
+</CodeGroup>
+
+## How to Run
+
+<Steps>
+  <Step title="Start the server">
+    ```bash
+    python examples/chat/server.py
+    ```
+    
+    Or specify a custom host and port:
+    ```bash
+    python examples/chat/server.py 0.0.0.0 8080
+    ```
+  </Step>
+
+  <Step title="Run one or more clients">
+    In separate terminals:
+    ```bash
+    python examples/chat/client.py
+    ```
+  </Step>
+
+  <Step title="Chat away">
+    Enter your nickname when prompted, then type messages to broadcast to all connected users.
+  </Step>
+</Steps>
+
+<Note>
+  The client uses a separate thread for reading user input to avoid blocking the `pump()` loop. This pattern is useful when integrating with game engines like pygame that need a continuous update loop.
+</Note>
+
+## Key Takeaways
+
+- **Network methods**: Define `Network_<action>` methods to automatically handle messages with `{"action": "<action>"}`
+- **Broadcasting**: Use a custom `broadcast()` method to send data to all connected clients
+- **Player management**: Track connected clients in a dictionary and clean up on disconnect via `on_close()`
+- **Threading pattern**: The client demonstrates how to use threading to handle input while maintaining a pump loop
+- **Type safety**: The `Channel` and `Server` classes use generic types for better IDE support

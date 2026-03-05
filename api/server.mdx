@@ -1,0 +1,184 @@
+---
+title: "Server"
+description: "Async TCP server that manages multiple client connections"
+---
+
+## Overview
+
+The `Server` class manages multiple client connections, creating a `Channel` instance for each one. It can run in the main thread or in a background daemon thread for host/client P2P setups.
+
+## Class Definition
+
+```python
+class Server[C: Channel]
+```
+
+A generic async TCP server parameterized by the Channel type.
+
+## Class Attributes
+
+<ResponseField name="channel_class" type="type[C]" required>
+  The `Channel` subclass instantiated for each new connection. Must be set in your subclass.
+</ResponseField>
+
+<ResponseField name="host" type="str">
+  Hostname or IP address the server is bound to.
+</ResponseField>
+
+<ResponseField name="port" type="int">
+  Port number the server is listening on.
+</ResponseField>
+
+<ResponseField name="channels" type="list[C]">
+  List of currently connected client channels.
+</ResponseField>
+
+## Constructor
+
+```python
+def __init__(
+    self,
+    host: str = "127.0.0.1",
+    port: int = 5071,
+) -> None
+```
+
+Initialize the server.
+
+<ParamField path="host" type="str" default="127.0.0.1">
+  Hostname or IP to bind to. Use `"0.0.0.0"` for all interfaces.
+</ParamField>
+
+<ParamField path="port" type="int" default="5071">
+  Port number to listen on.
+</ParamField>
+
+## Properties
+
+### address
+
+```python
+@property
+def address(self) -> tuple[str, int]
+```
+
+Server bind address as a `(host, port)` tuple.
+
+<ResponseField name="returns" type="tuple[str, int]">
+  A tuple containing the host and port the server is bound to.
+</ResponseField>
+
+## Methods
+
+### start
+
+```python
+async def start(self) -> None
+```
+
+Start accepting connections. Binds to `host:port` and begins listening for incoming TCP connections.
+
+This is an async method that must be awaited.
+
+### run
+
+```python
+async def run(self) -> None
+```
+
+Run the server forever. Blocks until the server is stopped or the task is cancelled.
+
+This is an async method that must be awaited.
+
+### launch
+
+```python
+def launch(self) -> None
+```
+
+Start the server and block forever. Convenience wrapper that hides asyncio boilerplate. Equivalent to calling `start()` then `run()` inside `asyncio.run()`. Handles `KeyboardInterrupt` gracefully.
+
+**Example:**
+
+```python
+GameServer(host="0.0.0.0", port=5071).launch()
+```
+
+### stop
+
+```python
+async def stop(self) -> None
+```
+
+Stop the server and disconnect all clients.
+
+This is an async method that must be awaited.
+
+### start_background
+
+```python
+def start_background(self) -> threading.Thread
+```
+
+Start the server in a daemon background thread. Useful for *Host Game* scenarios where the main thread needs to remain free for the game loop or UI.
+
+<ResponseField name="returns" type="threading.Thread">
+  The thread running the server.
+</ResponseField>
+
+### on_connect
+
+```python
+def on_connect(self, channel: C, addr: tuple[str, int]) -> None
+```
+
+Called when a new client connects. Override to run per-client setup (e.g. add to a player list).
+
+<ParamField path="channel" type="C">
+  The newly created channel for this client.
+</ParamField>
+
+<ParamField path="addr" type="tuple[str, int]">
+  `(host, port)` of the remote client.
+</ParamField>
+
+### on_disconnect
+
+```python
+def on_disconnect(self, channel: C) -> None
+```
+
+Called when a client disconnects. Override to run per-client cleanup.
+
+<ParamField path="channel" type="C">
+  The channel that disconnected.
+</ParamField>
+
+### send_to_all
+
+```python
+def send_to_all(self, data: dict[str, Any]) -> None
+```
+
+Broadcast a message to every connected client.
+
+<ParamField path="data" type="dict[str, Any]">
+  Message dictionary to send to all channels.
+</ParamField>
+
+## Complete Example
+
+```python
+from repod import Server, Channel
+
+class GameChannel(Channel):
+    def Network_chat(self, data: dict) -> None:
+        self.server.send_to_all(
+            {"action": "chat", "text": data["text"]}
+        )
+
+class GameServer(Server):
+    channel_class = GameChannel
+
+GameServer(host="0.0.0.0", port=5071).launch()
+```

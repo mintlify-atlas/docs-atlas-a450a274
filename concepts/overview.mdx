@@ -1,0 +1,235 @@
+---
+title: Architecture Overview
+description: Learn about repod's asyncio-based client-server architecture and main components
+---
+
+repod is a networking library designed to make it easy to write multiplayer games in Python. It uses `asyncio` and `msgpack` to asynchronously serialize network events and arbitrary data structures, delivering them to your high-level classes through simple callback methods.
+
+## Architecture Philosophy
+
+repod is built on a simple philosophy: **you shouldn't have to think about sockets, buffers, or polling**. Instead, you define callback methods that handle specific message types, and the library routes everything for you.
+
+The architecture is based on:
+
+- **asyncio** for non-blocking I/O
+- **msgpack** for efficient binary serialization
+- **Action-based dispatch** for clean message routing
+- **Background threads** on the client to keep your game loop synchronous
+
+## Core Components
+
+repod provides four main building blocks:
+
+### Server
+
+The [`Server`](/api/server#server) class manages multiple client connections. It runs an asyncio event loop that:
+
+- Accepts incoming TCP connections
+- Creates a new `Channel` instance for each client
+- Manages the lifecycle of all channels
+- Provides broadcast methods like `send_to_all()`
+
+```python server.py
+from repod import Server, Channel
+
+class GameServer(Server):
+    channel_class = GameChannel
+    
+    def on_connect(self, channel, addr):
+        print(f"Client connected from {addr}")
+        self.send_to_all({"action": "player_joined"})
+
+GameServer(host="0.0.0.0", port=5071).launch()
+```
+
+The `launch()` method is a convenience wrapper that:
+
+1. Starts the server with `await start()`
+2. Runs the event loop with `await run()`
+3. Handles `KeyboardInterrupt` gracefully
+4. Cleans up with `await stop()`
+
+### Channel
+
+The [`Channel`](/api/channel#channel) class represents a single network connection. On the server side, each connected client gets its own `Channel` instance.
+
+```python channel.py
+from repod import Channel
+
+class GameChannel(Channel):
+    def Network_chat(self, data: dict) -> None:
+        # Broadcast chat to all clients
+        self.server.send_to_all({
+            "action": "chat",
+            "text": data["text"]
+        })
+    
+    def Network_move(self, data: dict) -> None:
+        # Handle player movement
+        print(f"Player moved to {data['x']}, {data['y']}")
+```
+
+Channels are where your game logic lives. Each channel has:
+
+- A reference to the parent `Server` via `self.server`
+- The remote address via `self.addr`
+- A `send()` method for sending messages to this specific client
+- Lifecycle hooks: `on_connect()`, `on_close()`, `on_error()`
+
+### Client
+
+The [`Client`](/api/connection-listener#client) class is the low-level TCP client. It runs asyncio in a **background daemon thread** so your main game loop can remain fully synchronous.
+
+```python low_level_client.py
+from repod import Client
+
+client = Client(host="localhost", port=5071)
+client.start_background()
+
+# Send from main thread
+client.send({"action": "hello", "name": "Alice"})
+
+# Process received messages from the queue
+while not client._receive_queue.empty():
+    message = client._receive_queue.get()
+    print(message)
+```
+
+Most users don't interact with `Client` directly -- they use `ConnectionListener` instead.
+
+### ConnectionListener
+
+The [`ConnectionListener`](/api/connection-listener#connectionlistener) class is a high-level mixin that wraps `Client` and provides a synchronous API for your game loop.
+
+```python game_client.py
+import time
+from repod import ConnectionListener
+
+class GameClient(ConnectionListener):
+    def Network_connected(self, data: dict) -> None:
+        print("Connected!")
+        self.send({"action": "hello", "name": "Alice"})
+    
+    def Network_chat(self, data: dict) -> None:
+        print(f"Chat: {data['text']}")
+
+client = GameClient()
+client.connect("localhost", 5071)
+
+while True:
+    client.pump()  # Process all queued messages
+    time.sleep(0.01)
+```
+
+Calling `pump()` once per frame:
+
+1. Drains the receive queue from the background thread
+2. Dispatches each message to the matching `Network_{action}` method
+3. Falls back to `network_received()` if no handler exists
+
+## How It Works
+
+Here's the complete flow when a client sends a message:
+
+<Steps>
+  <Step title="Client sends message">
+    Your game code calls `client.send({"action": "chat", "text": "Hello"})`
+  </Step>
+  
+  <Step title="Serialization">
+    The message is serialized with msgpack and prefixed with a 4-byte length header
+  </Step>
+  
+  <Step title="Background thread">
+    The client's background asyncio thread writes the data to the socket
+  </Step>
+  
+  <Step title="Server receives">
+    The server's `Channel._read_loop()` reads the data and parses the length-prefix frame
+  </Step>
+  
+  <Step title="Message dispatch">
+    The channel's `_dispatch()` method routes the message to `Network_chat()` based on the `"action"` key
+  </Step>
+  
+  <Step title="Server responds">
+    Your `Network_chat()` handler calls `self.server.send_to_all()` to broadcast
+  </Step>
+  
+  <Step title="Client receives">
+    Each client's background thread reads the response and enqueues it
+  </Step>
+  
+  <Step title="Client dispatch">
+    When you call `pump()`, the message is dispatched to the client's `Network_chat()` method
+  </Step>
+</Steps>
+
+## Thread Model
+
+<Warning>
+Understanding the threading model is critical for avoiding race conditions.
+</Warning>
+
+### Server Threading
+
+The server has **two modes**:
+
+1. **Foreground mode** (default): `launch()` runs the asyncio loop in the main thread
+2. **Background mode**: `start_background()` runs the asyncio loop in a daemon thread
+
+```python background_server.py
+from repod import Server, Channel
+
+class GameChannel(Channel):
+    def Network_action(self, data: dict) -> None:
+        # This runs in the server's event loop thread
+        print("Handling action")
+
+server = GameServer(host="127.0.0.1", port=5071)
+thread = server.start_background()
+
+# Main thread is now free for game loop
+while True:
+    # Your game logic here
+    pass
+```
+
+Background mode is useful for **peer-to-peer "Host Game" scenarios** where one player acts as both client and server.
+
+### Client Threading
+
+The client **always** runs asyncio in a background daemon thread. Your main thread:
+
+- Calls `send()` (thread-safe)
+- Calls `pump()` to process queued messages (main thread only)
+
+The background thread:
+
+- Runs `_read_loop()` and `_write_loop()`
+- Enqueues received messages to `_receive_queue`
+- Writes outgoing messages from `_send_queue`
+
+<Info>
+The `send()` method is thread-safe and can be called from any thread. The `pump()` method is **not** thread-safe and must only be called from your main game loop.
+</Info>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Client-Server Model" icon="network-wired" href="/concepts/client-server">
+    Deep dive into server lifecycle, channels, and the background thread model
+  </Card>
+  
+  <Card title="Actions & Dispatch" icon="route" href="/concepts/actions-dispatch">
+    Learn how action-based message routing works
+  </Card>
+  
+  <Card title="Serialization" icon="binary" href="/concepts/serialization">
+    Understand msgpack and length-prefix framing
+  </Card>
+  
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Build your first server and client
+  </Card>
+</CardGroup>
